@@ -1,3 +1,6 @@
+// js/src/forum/states/ViewportState.js
+
+// [CHANGED] 对 preview/trim 做空值守护；本文件其余逻辑保持不变
 import Stream from 'flarum/common/utils/Stream';
 
 export default class ViewportState {
@@ -20,7 +23,7 @@ export default class ViewportState {
   messagesFetched = false;
 
   constructor(params) {
-    if (params.model) {
+    if (params?.model) {
       this.initChatStorage(params.model);
       this.input.content(this.getChatStorageValue('draft'));
     }
@@ -92,6 +95,10 @@ export default class ViewportState {
 
     if (text && text.trim().length > 0 && !this.loadingSend) {
       if (this.input.writingPreview) {
+        if (this.input.instance?.inputPreviewEnd) {
+          // [CHANGED] 防守 instance 为空
+          this.input.instance.inputPreviewEnd();
+        }
         this.input.writingPreview = false;
 
         this.messagePost(this.input.previewModel);
@@ -100,7 +107,8 @@ export default class ViewportState {
         this.inputClear();
       } else if (this.messageEditing) {
         const model = this.messageEditing;
-        if (model.content.trim() !== model.oldContent.trim()) {
+        // [CHANGED] 防守 null/undefined
+        if ((model.content || '').trim() !== (model.oldContent || '').trim()) {
           model.oldContent = model.content;
           app.chat.editChatMessage(model, true, model.content);
         }
@@ -111,7 +119,10 @@ export default class ViewportState {
   }
 
   messageEdit(model) {
-    if (this.input.writingPreview) this.input.instance.inputPreviewEnd();
+    if (this.input.writingPreview && this.input.instance?.inputPreviewEnd) {
+      // [CHANGED]
+      this.input.instance.inputPreviewEnd();
+    }
     if (this.messageEditing) this.messageEditEnd();
 
     model.isEditing = true;
@@ -123,7 +134,7 @@ export default class ViewportState {
     if (inputElement) {
       inputElement.value = this.input.content(model.oldContent);
       inputElement.focus();
-      if (app.chat.input && app.chat.input.resizeInput) {
+      if (app.chat.input?.resizeInput) {
         app.chat.input.resizeInput();
       }
     }
@@ -179,4 +190,3 @@ export default class ViewportState {
     if (input) input.focus();
   }
 }
-
