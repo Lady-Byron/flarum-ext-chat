@@ -1,23 +1,16 @@
 <?php
-/*
- * This file is part of xelson/flarum-ext-chat
- *
- * For the full copyright and license information, please view the LICENSE
- * file that was distributed with this source code.
- */
 
 namespace Xelson\Chat\Api\Serializers;
 
-use Flarum\User\User;
 use Flarum\Api\Serializer\AbstractSerializer;
 use Flarum\Api\Serializer\BasicUserSerializer;
 use Flarum\Settings\SettingsRepositoryInterface;
 use Xelson\Chat\ChatSocket;
-use Xelson\Chat\Api\Serializers\ChatSerializer;
 
 class MessageSerializer extends AbstractSerializer
 {
     /**
+     * JSON:API resource type
      * @var string
      */
     protected $type = 'chatmessages';
@@ -25,65 +18,58 @@ class MessageSerializer extends AbstractSerializer
     /**
      * @var SettingsRepositoryInterface
      */
-    protected $settings;
+    protected SettingsRepositoryInterface $settings;
 
     /**
-     * @var User
+     * Optional realtime/socket hook (kept for compatibility)
+     * @var ChatSocket
      */
-    protected $actor;
+    protected ChatSocket $socket;
 
-    /**
-     * @param PusherWrapper                 $pusher
-     */
-    public function __construct(
-        SettingsRepositoryInterface $settings,
-        ChatSocket $socket
-    ) 
+    public function __construct(SettingsRepositoryInterface $settings, ChatSocket $socket)
     {
         $this->settings = $settings;
         $this->socket = $socket;
     }
 
     /**
-     * Get the default set of serialized attributes for a model.
-     *
-     * @param object|array $model
+     * @param object|array $message
      * @return array
      */
-    protected function getDefaultAttributes($message)
+    protected function getDefaultAttributes($message): array
     {
-        $attributes = $message->getAttributes(); // danger thing, i have to remove this line in all models
+        // Note: keep original behavior but avoid leaking ip_address
+        $attributes = $message->getAttributes();
         unset($attributes['ip_address']);
 
         $attributes['created_at'] = $this->formatDate($message->created_at);
-        if($attributes['edited_at']) $attributes['edited_at'] = $this->formatDate($message->edited_at);
-        if($this->settings->get('xelson-chat.settings.display.censor') && !$this->actor->id)
-        {
-            $attributes['message'] = str_repeat("*", strlen($attributes['message']));
+
+        if ($message->edited_at) {
+            $attributes['edited_at'] = $this->formatDate($message->edited_at);
+        }
+
+        // Censor message for guests if enabled
+        $censorEnabled = (bool) $this->settings->get('xelson-chat.settings.display.censor');
+        $isGuest = !($this->actor && $this->actor->id);
+
+        if ($censorEnabled && $isGuest && isset($attributes['message'])) {
+            $attributes['message'] = str_repeat('*', mb_strlen((string) $attributes['message']));
             $attributes['is_censored'] = true;
         }
+
         return $attributes;
     }
-    
-    /**
-     * @return \Tobscure\JsonApi\Relationship
-     */
+
     public function user($message)
     {
         return $this->hasOne($message, BasicUserSerializer::class);
     }
 
-    /**
-     * @return \Tobscure\JsonApi\Relationship
-     */
     public function deleted_by($message)
     {
         return $this->hasOne($message, BasicUserSerializer::class);
     }
 
-    /**
-     * @return \Tobscure\JsonApi\Relationship
-     */
     public function chat($message)
     {
         return $this->hasOne($message, ChatSerializer::class);
