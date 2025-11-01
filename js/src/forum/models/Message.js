@@ -1,3 +1,6 @@
+// js/src/forum/models/Message.js
+
+// [UNCHANGED] 与 1.8 兼容；保持即可（补上 1.8 路径）
 import Model from 'flarum/common/Model';
 
 export default class Message extends Model {}
