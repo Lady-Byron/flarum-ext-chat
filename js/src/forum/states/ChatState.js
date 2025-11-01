@@ -391,7 +391,7 @@ export default class ChatState {
       if (window.s9e?.TextFormatter?.preview) {
         // [CHANGED] 容错
         // @ts-ignore
-        s9e.TextFormatter.preview(content, el);
+        window.s9e.TextFormatter.preview(content, el);
       } else {
         el.innerHTML = content;
       }
