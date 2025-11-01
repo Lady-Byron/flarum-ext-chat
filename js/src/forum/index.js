@@ -1,6 +1,6 @@
 import app from 'flarum/forum/app';
 import { extend } from 'flarum/common/extend';
-import Application from 'flarum/common/Application';
+import ForumApplication from 'flarum/forum/ForumApplication';
 
 import ChatFrame from './components/ChatFrame';
 
