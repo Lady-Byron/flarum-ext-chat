@@ -11,16 +11,21 @@ import Model from 'flarum/common/Model';
 import ChatState from './states/ChatState';
 // import addChatPage from './addChatPage'; // 若未来需要独立路由入口可开启
 
-// 挂载容器
-const chatRoot = document.createElement('div');
-chatRoot.setAttribute('id', 'chat');
-document.body.append(chatRoot);
+// [CHANGED] 幂等创建容器（避免重复挂载）
+function ensureChatRoot() {
+  let el = document.getElementById('chat');
+  if (!el) {
+    el = document.createElement('div');
+    el.setAttribute('id', 'chat');
+    document.body.append(el);
+  }
+  return el;
+}
 
 app.initializers.add('xelson-chat', () => {
-  // 仅在论坛端启用且有权限时挂载
   if (!app.forum) return;
 
-  // 屏蔽“Pusher or Websockets”缺失提示（只屏蔽这条，其他警告照常）
+  // [CHANGED] 屏蔽“Pusher or Websockets”唯一那条提示，其它保持
   const rawShow = app.alerts.show.bind(app.alerts);
   app.alerts.show = (attrs, content, ...rest) => {
     const msg =
@@ -31,11 +36,11 @@ app.initializers.add('xelson-chat', () => {
     return rawShow(attrs, content, ...rest);
   };
 
-  // 注册模型
+  // [CHANGED] 注册模型
   app.store.models.chats = Chat;
   app.store.models.chatmessages = Message;
 
-  // 为 User 补充 chat_pivot 读取器（保持与后端 pivot 格式一致）
+  // ------- User.chat_pivot(chatId) 读取器 -------
   function pivot(name, id, attr, transform) {
     pivot.hasOne = function (name, id, attr) {
       return function () {
@@ -67,38 +72,37 @@ app.initializers.add('xelson-chat', () => {
     },
   });
 
-  // 在应用挂载时初始化 ChatState 与界面
-  extend(Application.prototype, 'mount', function () {
+  // [CHANGED] 扩展 ForumApplication 挂载周期（更稳妥）
+  extend(ForumApplication.prototype, 'mount', function () {
     if (!app.forum.attribute('xelson-chat.permissions.enabled')) return;
 
-    app.chat = new ChatState();
-    m.mount(document.getElementById('chat'), ChatFrame);
+    const root = ensureChatRoot();
 
-    // 浏览器通知权限
+    app.chat = new ChatState();
+    m.mount(root, ChatFrame);
+
     if ('Notification' in window && app.chat.getFrameState('notify')) {
       Notification.requestPermission();
     }
 
-    // 路线 B：仅此处订阅一次 Realtime 事件，并统一转交给 ChatState
-    if (app.realtime && typeof app.realtime.on === 'function') {
+    // [CHANGED] 幂等绑定 Realtime 事件，统一路由给 ChatState
+    if (app.realtime && typeof app.realtime.on === 'function' && !app.__neonRealtimeBound) {
+      app.__neonRealtimeBound = true; // 防重复绑定
       app.realtime.on('neonchat.events', (payload) => {
         try {
           if (app.chat && typeof app.chat.handleSocketEvent === 'function') {
             app.chat.handleSocketEvent(payload);
           }
         } catch (e) {
-          // 不要阻断其他事件
           // eslint-disable-next-line no-console
           console.warn('[xelson-chat] handleSocketEvent failed:', e);
         }
       });
     }
 
-    // 首次拉取会话列表
     app.chat.apiFetchChats();
   });
 
-  // 如需在首页添加「聊天」按钮，可启用
-  // addChatPage();
+  // 可选：addChatPage(); // 若需独立路由入口再启用
 });
 
