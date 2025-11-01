@@ -1,5 +1,9 @@
+// js/src/forum/models/Chat.js
+
+// [CHANGED] 空值守护、未读兜底、用户身份用 id() 比较、computed 依赖调整
 import Model from 'flarum/common/Model';
 import computed from 'flarum/common/utils/computed';
+import app from 'flarum/forum/app';
 
 export default class Chat extends Model {}
 
@@ -15,13 +19,15 @@ Object.assign(Chat.prototype, {
   icon: Model.attribute('icon'),
 
   role: Model.attribute('role'),
-  unreaded: Model.attribute('unreaded', (v) => Math.max(v, 0)),
+  // [CHANGED] 避免 NaN
+  unreaded: Model.attribute('unreaded', (v) => Math.max(parseInt(v ?? 0, 10) || 0, 0)),
   readed_at: Model.attribute('readed_at', Model.transformDate),
   removed_at: Model.attribute('removed_at', Model.transformDate),
   joined_at: Model.attribute('joined_at', Model.transformDate),
   removed_by: Model.attribute('removed_by'),
 
-  pm_user: computed('freshness', function () {
+  // [CHANGED] 以 users/type 作为依赖，可靠触发
+  pm_user: computed('users', 'type', function () {
     return this.getPMUser();
   }),
 
@@ -42,17 +48,20 @@ Object.assign(Chat.prototype, {
   }),
 
   matches(q) {
+    const t = (this.title() || '').toLowerCase();
+    const needle = (q || '').toLowerCase();
     return (
-      this.title().toLowerCase().includes(q) ||
-      this.users().some((user) => user.displayName().toLowerCase().includes(q))
+      (!!needle && t.includes(needle)) ||
+      (this.users?.() || []).some((u) => (u?.displayName?.() || '').toLowerCase().includes(needle))
     );
   },
 
   getPMUser() {
-    const users = this.users();
+    const users = this.users?.() || [];
     if (app.session.user && this.type() === 0 && users.length && users.length < 3) {
+      const myId = app.session.user.id?.();
       for (const user of users) {
-        if (user && user !== app.session.user) return user;
+        if (user && user.id?.() !== myId) return user;
       }
     }
     return null;
@@ -68,3 +77,4 @@ Object.assign(Chat.prototype, {
     return r * 0.299 + g * 0.587 + b * 0.114 > 186 ? darkColor : lightColor;
   },
 });
+
