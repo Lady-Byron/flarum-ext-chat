@@ -1,4 +1,13 @@
 // js/src/forum/states/ChatState.js
+//
+// === 改动汇总 ===
+// [CHANGED] A. handleSocketEvent：所有“是否本人”的判断一律改为按 id() 比较（更稳），不再做对象引用比较
+// [CHANGED] B. chat.edit -> roles_updated_for：翻译占位改为传纯字符串，不再把 <b>{name}</b> 作为占位值传入 translator
+// [CHANGED] C. setRelationship：从模型实例/文档对象读取 type；移除无用变量与写死 'chatmessages' 的风险（仍保留兜底）
+// [CHANGED] D. getUnreadedTotal：用 Number() + Math.max()，避免按位或导致的 32 位溢出与负数
+// [CHANGED] E. pushOne：若已是 Model 实例则直接返回；否则按 JSON:API 文档推入（小幅稳健性增强）
+//
+// 其余逻辑保持不变。
 
 import app from 'flarum/forum/app';
 import Model from 'flarum/common/Model';
@@ -15,7 +24,7 @@ import ViewportState from './ViewportState';
 //   response: {
 //     message?: <JSON:API resource or document>,
 //     chat?: <JSON:API resource or document>,
-//     actions?: { msg?: string, hide?: boolean, invoker?: number },        // [CHANGED] 可选：从 response 读取
+//     actions?: { msg?: string, hide?: boolean, invoker?: number },
 //     eventmsg_range?: number[],
 //     roles_updated_for?: number[]
 //   }
@@ -75,10 +84,11 @@ export default class ChatState {
    *  实用方法
    * -------------------------------- */
 
-  // [CHANGED] 安全 JSON 解析
+  // [CHANGED] 若是 Model 实例直接返回；否则按 JSON:API 文档推入
   // eslint-disable-next-line class-methods-use-this
   pushOne(resourceOrDoc) {
     if (!resourceOrDoc) return null;
+    if (resourceOrDoc instanceof Model) return resourceOrDoc; // [CHANGED]
     if (resourceOrDoc.data || resourceOrDoc.included) {
       return app.store.pushPayload(resourceOrDoc);
     }
@@ -86,22 +96,38 @@ export default class ChatState {
     return app.store.pushPayload({ data: resourceOrDoc });
   }
 
-  // [CHANGED] 设置关系（JSON:API 形状）
+  // [CHANGED] 通用关系设置：从“模型实例/文档对象”读取 type，兜底 'chatmessages'
   // eslint-disable-next-line class-methods-use-this
   setRelationship(model, relName, relatedModel) {
     if (!model || !relatedModel) return;
-    const type = relatedModel?.data?.type || relatedModel?.data?.type || relatedModel?.data?.type || relatedModel?.data?.type || relatedModel?.data?.type || relatedModel?.data?.type; // 确保不被摇树
-    const safeType = relatedModel?.data?.type || 'chatmessages';
-    const id = relatedModel.id?.() || relatedModel.id;
+
+    // 取 id（兼容 Model 实例或文档对象）
+    let id =
+      (typeof relatedModel.id === 'function' ? relatedModel.id() : relatedModel.id) ??
+      relatedModel?.data?.id ??
+      null;
+
+    // 取 type（优先 Model 实例的 data.type；再尝试文档对象 data.type；再兜底）
+    let type = null;
+    if (relatedModel instanceof Model) {
+      type = relatedModel?.data?.type || null;
+    } else if (relatedModel?.data?.type) {
+      type = relatedModel.data.type;
+    } else if (relatedModel?.type && relatedModel?.id) {
+      type = relatedModel.type;
+    }
+    if (!type) type = 'chatmessages'; // [CHANGED] 兜底，符合当前唯一使用场景 last_message
+
     if (!id) return;
+
     model.pushData({
       relationships: {
-        [relName]: { data: { type: safeType, id } },
+        [relName]: { data: { type, id } },
       },
     });
   }
 
-  // [CHANGED] 取/建视口状态
+  // 取/建视口状态
   getViewportState(model) {
     const id = model?.id?.();
     if (!id) return null;
@@ -117,11 +143,13 @@ export default class ChatState {
   handleSocketEvent(packet) {
     if (!packet || !packet.event || !packet.event.id) return;
 
-    let message = this.pushOne(packet.response?.message);  // [CHANGED]
-    let chat = this.pushOne(packet.response?.chat);        // [CHANGED]
+    let message = this.pushOne(packet.response?.message);
+    let chat = this.pushOne(packet.response?.chat);
+
+    // [CHANGED] 统一在顶部获取当前用户 id，后续所有“是否本人”判断都用 id 值比较
+    const meId = app.session.user?.id?.(); // [CHANGED]
 
     // 兼容 actions 来源：优先从 response.actions 取，否则尝试 message.attributes.actions
-    // [CHANGED]
     const actions =
       packet.response?.actions ||
       (packet.response?.message &&
@@ -129,14 +157,15 @@ export default class ChatState {
           packet.response.message?.attributes?.actions)) ||
       {};
 
-    // 过滤：对已离开的公开频道（type=1）不弹
+    // 屏蔽：对已离开的公开频道（type=1）不弹
     if (message && message.chat?.() && message.chat().type?.() === 1 && message.chat().removed_at?.()) {
       return;
     }
 
     switch (packet.event.id) {
       case 'message.post': {
-        if (!app.session.user || message.user?.() !== app.session.user) {
+        const authorId = message?.user?.()?.id?.(); // [CHANGED]
+        if (!meId || authorId !== meId) {
           this.insertChatMessage(message, true);
           m.redraw();
         }
@@ -145,14 +174,15 @@ export default class ChatState {
 
       case 'message.edit': {
         const invoker = actions.invoker;
-        if (app.session.user && invoker === app.session.user.id?.()) break;
+        if (meId && invoker === meId) break; // [CHANGED]
 
         if (Object.prototype.hasOwnProperty.call(actions, 'msg')) {
-          if (!app.session.user || message.user?.() !== app.session.user) {
+          const authorId = message?.user?.()?.id?.(); // [CHANGED]
+          if (!meId || authorId !== meId) {
             this.editChatMessage(message, false, actions.msg);
           }
         } else if (Object.prototype.hasOwnProperty.call(actions, 'hide')) {
-          if (!app.session.user || invoker !== app.session.user.id?.()) {
+          if (!meId || invoker !== meId) { // [CHANGED]
             actions.hide
               ? this.hideChatMessage(message, false, message.deleted_by?.())
               : this.restoreChatMessage(message, false);
@@ -162,14 +192,16 @@ export default class ChatState {
       }
 
       case 'message.delete': {
-        if (!app.session.user || message.deleted_by?.() !== app.session.user) {
+        const deletedById = message?.deleted_by?.()?.id?.(); // [CHANGED]
+        if (!meId || deletedById !== meId) {
           this.deleteChatMessage(message, false, message.deleted_by?.());
         }
         break;
       }
 
       case 'chat.create': {
-        if (!app.session.user || chat.creator?.() !== app.session.user) {
+        const creatorId = chat?.creator?.()?.id?.(); // [CHANGED]
+        if (!meId || creatorId !== meId) {
           this.addChat(chat, true);
           m.redraw();
         }
@@ -189,13 +221,20 @@ export default class ChatState {
         }
 
         const updated = packet.response?.roles_updated_for || [];
-        if (app.session.user && updated.includes(app.session.user.id?.())) {
+        if (meId && updated.includes(meId)) {
           const role = app.session.user.chat_pivot(chat.id?.()).role?.();
           const name = chat.title?.() || '';
+          // [CHANGED] 翻译占位只传字符串，避免 VNode 变 [object Object]
           if (role === 0) {
-            app.alerts.show({ type: 'error' }, app.translator.trans('xelson-chat.forum.chat.edit_modal.moderator.lost', { chatname: <b>{name}</b> }));
+            app.alerts.show(
+              { type: 'error' },
+              app.translator.trans('xelson-chat.forum.chat.edit_modal.moderator.lost', { chatname: name }) // [CHANGED]
+            );
           } else if (role === 1) {
-            app.alerts.show({ type: 'success' }, app.translator.trans('xelson-chat.forum.chat.edit_modal.moderator.got', { chatname: <b>{name}</b> }));
+            app.alerts.show(
+              { type: 'success' },
+              app.translator.trans('xelson-chat.forum.chat.edit_modal.moderator.got', { chatname: name }) // [CHANGED]
+            );
           }
         }
 
@@ -204,7 +243,8 @@ export default class ChatState {
       }
 
       case 'chat.delete': {
-        if (!app.session.user || chat.creator?.() !== app.session.user) {
+        const creatorId = chat?.creator?.()?.id?.(); // [CHANGED]
+        if (!meId || creatorId !== meId) {
           this.deleteChat(chat);
           m.redraw();
         }
@@ -240,7 +280,7 @@ export default class ChatState {
   }
 
   getChatsSortedByLastUpdate() {
-    // [CHANGED] 按最后消息时间排序；缺失时置后
+    // 按最后消息时间排序；缺失时置后
     return this.getChats().slice().sort((a, b) => {
       const la = a.last_message?.()?.created_at?.()?.getTime?.() || 0;
       const lb = b.last_message?.()?.created_at?.()?.getTime?.() || 0;
@@ -249,10 +289,12 @@ export default class ChatState {
   }
 
   getUnreadedTotal() {
-    // [CHANGED] 空数组返回 0；并对每项做函数存在性守护
+    // [CHANGED] 用 Number() + Math.max()，避免按位或带来的 32 位溢出与负数
     const list = this.getChats();
     if (!list.length) return 0;
-    return list.map((m) => (m.unreaded?.() | 0)).reduce((a, b) => a + b, 0);
+    return list
+      .map((m) => Math.max(Number(m.unreaded?.() || 0), 0)) // [CHANGED]
+      .reduce((a, b) => a + b, 0);
   }
 
   addChat(model, outside = false) {
@@ -323,7 +365,7 @@ export default class ChatState {
    *  消息集合 & 排序
    * -------------------------------- */
   getChatMessages(filter) {
-    // [CHANGED] 用 created_at 升序；无时间戳则置后（按 id 兜底）
+    // 用 created_at 升序；无时间戳则置后（按 id 兜底）
     const list = this.chatmessages.slice().sort((a, b) => {
       const ta = a.created_at?.()?.getTime?.() || 0;
       const tb = b.created_at?.()?.getTime?.() || 0;
@@ -358,7 +400,7 @@ export default class ChatState {
       const chatModel = model.chat?.();
       if (chatModel) {
         chatModel.isNeedToFlash = true;
-        const current = parseInt(chatModel.unreaded?.() ?? 0, 10) || 0; // [CHANGED]
+        const current = parseInt(chatModel.unreaded?.() ?? 0, 10) || 0;
         chatModel.pushAttributes({ unreaded: current + 1 });
       }
     }
@@ -368,7 +410,7 @@ export default class ChatState {
 
     const list = this.getChatMessages((m) => m.chat?.() == chatModel);
     if ((notify || chatModel.removed_at?.()) && model.id?.() && list[list.length - 1] === model) {
-      this.setRelationship(chatModel, 'last_message', model); // [CHANGED]
+      this.setRelationship(chatModel, 'last_message', model); // 维护 last_message
       const vp = this.getViewportState(chatModel);
       if (vp) vp.newPushedPosts = true;
     }
@@ -389,7 +431,6 @@ export default class ChatState {
       // 由 flarum/s9e 渲染 BBCode/Markdown
       // @ts-ignore
       if (window.s9e?.TextFormatter?.preview) {
-        // [CHANGED] 容错
         // @ts-ignore
         window.s9e.TextFormatter.preview(content, el);
       } else {
@@ -420,11 +461,8 @@ export default class ChatState {
 
     // 提及修复（deleted mention -> link）
     if (window.$) {
-      // [CHANGED] jQuery 为可选依赖
       window
-        .$(
-          el
-        )
+        .$(el)
         .find('.UserMention.UserMention--deleted')
         .each(function () {
           const username = this.innerText?.substring(1);
@@ -446,7 +484,7 @@ export default class ChatState {
     // 安全加载 message 内脚本（按 url 去重，不重复注入）
     const self = this;
     throttle(100, () => {
-      if (!window.$) return; // [CHANGED]
+      if (!window.$) return;
       window.$('.NeonChatFrame script').each(function () {
         self.executedScripts = self.executedScripts || {};
         const scriptURL = window.$(this).attr('src');
@@ -546,7 +584,7 @@ export default class ChatState {
     if (messageOrDate instanceof Date) timestamp = messageOrDate.toISOString();
     else if (messageOrDate && messageOrDate.created_at?.()) timestamp = messageOrDate.created_at().toISOString();
 
-    if (!timestamp) return; // [CHANGED] 无时间戳不发
+    if (!timestamp) return; // 无时间戳不发
 
     this.readingTimeout = setTimeout(() => {
       chat.save({ actions: { reading: timestamp } });
@@ -577,7 +615,7 @@ export default class ChatState {
         console.warn('apiFetchChatMessages error:', e);
       })
       .finally(() => {
-        // [CHANGED] 无论结果如何都清锁
+        // 无论结果如何都清锁
         viewport.loading = false;
         viewport.loadingQueries[query] = false;
         m.redraw();
@@ -596,7 +634,7 @@ export default class ChatState {
     return model.save({ message: model.content, created_at: new Date(), chat_id: model.chat?.().id?.() }).then(
       (r) => {
         if (r?.data) {
-          // [CHANGED] pushPayload 返回的 data 写回本地 model，修复偶发“未落库”闪断
+          // pushPayload 返回的 data 写回本地 model，修复偶发“未落库”闪断
           model.pushData(r.data);
         }
         model.exists = true;
@@ -607,7 +645,7 @@ export default class ChatState {
 
         const chatModel = model.chat?.();
         if (chatModel) {
-          this.setRelationship(chatModel, 'last_message', model); // [CHANGED]
+          this.setRelationship(chatModel, 'last_message', model);
         }
       },
       () => {
@@ -629,7 +667,7 @@ export default class ChatState {
     if (!model) return;
     model.isDeletedForever = true;
 
-    // [CHANGED] 以关系形状写回 deleted_by
+    // 以关系形状写回 deleted_by
     if (!model.deleted_by?.()) {
       model.pushData({
         relationships: { deleted_by: { data: user ? { type: 'users', id: user.id?.() } : null } },
@@ -641,7 +679,7 @@ export default class ChatState {
     if (chatModel) {
       const list = this.getChatMessages((m) => m.chat?.() == chatModel && !m.isDeletedForever);
       if (list.length) {
-        this.setRelationship(chatModel, 'last_message', list[list.length - 1]); // [CHANGED]
+        this.setRelationship(chatModel, 'last_message', list[list.length - 1]);
       }
     }
 
@@ -657,7 +695,7 @@ export default class ChatState {
 
   hideChatMessage(model, sync = false, user = app.session.user) {
     if (!model) return;
-    // [CHANGED] 关系形状
+    // 关系形状
     model.pushData({
       relationships: { deleted_by: { data: user ? { type: 'users', id: user.id?.() } : null } },
     });
@@ -674,7 +712,7 @@ export default class ChatState {
       this.insertChatMessage(model);
       model.isNeedToFlash = true;
     } else {
-      // [CHANGED] 清空 deleted_by 关系
+      // 清空 deleted_by 关系
       model.pushData({ relationships: { deleted_by: { data: null } } });
       model.isNeedToFlash = true;
     }
@@ -687,7 +725,8 @@ export default class ChatState {
    *  通知
    * -------------------------------- */
   messageNotify(model) {
-    if (!app.session.user || model.user?.().id?.() != app.session.user.id?.()) this.notifyTry(model);
+    const mine = app.session.user && model.user?.()?.id?.() == app.session.user.id?.(); // [CHANGED] 用 id 比较
+    if (!mine) this.notifyTry(model);
   }
 
   notifyTry(model) {
@@ -785,7 +824,7 @@ export default class ChatState {
  *  小工具（文件内私有）
  * ------------------------- */
 
-// [CHANGED] 安全 JSON 解析
+// 安全 JSON 解析
 function safeJsonGet(raw) {
   try {
     return raw ? JSON.parse(raw) : null;
