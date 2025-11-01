@@ -1,5 +1,5 @@
 // js/src/forum/components/ChatAvatar.js
-// [CHANGED] Imports to flarum/common/*; add null guards in firstLetter()
+// [CHANGED] Imports to flarum/common/*; class -> className; firstLetter 空值守护
 
 import Component from 'flarum/common/Component';            // [CHANGED]
 import classList from 'flarum/common/utils/classList';       // [CHANGED]
@@ -22,7 +22,7 @@ export default class ChatAvatar extends Component {
         }}
       >
         {this.model.icon && this.model.icon() ? (
-          <i class={this.model.icon()}></i>
+          <i className={this.model.icon()}></i>  {/* [CHANGED] */}
         ) : avatar ? null : (
           this.firstLetter((this.model.title && this.model.title()) || '').toUpperCase()
         )}
@@ -40,7 +40,7 @@ export default class ChatAvatar extends Component {
         }}
       >
         {this.model.icon && this.model.icon() ? (
-          <i class={this.model.icon()}></i>
+          <i className={this.model.icon()}></i>  {/* [CHANGED] */}
         ) : this.model.avatarUrl && this.model.avatarUrl() ? null : (
           this.firstLetter((this.model.title && this.model.title()) || '').toUpperCase()
         )}
@@ -64,3 +64,4 @@ export default class ChatAvatar extends Component {
     return c && c.toLowerCase() != c.toUpperCase();
   }
 }
+
