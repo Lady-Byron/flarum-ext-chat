@@ -1,10 +1,12 @@
 // js/src/forum/components/ChatCreateModal.js
-// [CHANGED] Import paths -> flarum/common/*
-// [CHANGED] <a target="blank"> -> target="_blank" + rel="noopener"
+// [CHANGED] class -> className; 导入路径到 flarum/common/*；补 import app；
+// [CHANGED] rejoinExistingChat：改为对现有会话 PATCH users.added，避免重复创建 PM
 
-import Button from 'flarum/common/components/Button';          // [CHANGED]
-import classList from 'flarum/common/utils/classList';         // [CHANGED]
-import Stream from 'flarum/common/utils/Stream';               // [CHANGED]
+import app from 'flarum/forum/app';                            // [CHANGED]
+import Button from 'flarum/common/components/Button';           // [CHANGED]
+import classList from 'flarum/common/utils/classList';          // [CHANGED]
+import Stream from 'flarum/common/utils/Stream';                // [CHANGED]
+import Model from 'flarum/common/Model';                        // [CHANGED]
 
 import ChatSearchUser from './ChatSearchUser';
 import ChatModal from './ChatModal';
@@ -33,7 +35,7 @@ export default class ChatCreateModal extends ChatModal {
 
       const existingLeftChat = app.chat.findAnyPMChatIncludingLeft(app.session.user, otherUser);
       if (existingLeftChat && existingLeftChat.removed_at && existingLeftChat.removed_at()) {
-        this.rejoinExistingChat(existingLeftChat, otherUser);
+        this.rejoinExistingChat(existingLeftChat);
         return;
       }
     }
@@ -41,34 +43,25 @@ export default class ChatCreateModal extends ChatModal {
     this.createNewChat();
   }
 
-  rejoinExistingChat(existingChat, otherUser) {
-    app.store
-      .createRecord('chats')
+  // [CHANGED] 正确的“重回 PM”实现：对已有会话执行 users.added，而不是新建 chat
+  rejoinExistingChat(existingChat) {
+    existingChat
       .save({
-        title: '',
-        isChannel: false,
-        icon: '',
-        color: '',
-        relationships: { users: [otherUser, app.session.user] },
+        users: { added: [Model.getIdentifier(app.session.user)] },    // [CHANGED]
       })
-      .then((model) => {
-        app.chat.addChat(model);
-        app.chat.onChatChanged(model);
-        app.alerts.show({ type: 'success' }, app.translator.trans('xelson-chat.forum.chat.rejoin.success')); // [CHANGED] i18n-friendly
+      .then(() => {
+        // 服务器会清空 pivot.removed_at；本地实例已被 pushPayload 更新
+        app.chat.onChatChanged(existingChat);
+        app.alerts.show({ type: 'success' }, app.translator.trans('xelson-chat.forum.chat.rejoin.success'));
         m.redraw();
       })
       .catch((error) => {
         // eslint-disable-next-line no-console
         console.error('Error rejoining chat:', error);
-        const chatInList = app.chat.getChats().find((c) => c.id && c.id() === (existingChat.id && existingChat.id()));
-        if (chatInList) {
-          app.chat.onChatChanged(chatInList);
-          app.alerts.show({ type: 'success' }, app.translator.trans('xelson-chat.forum.chat.rejoin.opened'));
-        } else {
-          app.alerts.show({ type: 'error' }, app.translator.trans('xelson-chat.forum.chat.rejoin.failed'));
-        }
+        app.alerts.show({ type: 'error' }, app.translator.trans('xelson-chat.forum.chat.rejoin.failed'));
         m.redraw();
       });
+
     this.hide();
   }
 
@@ -96,6 +89,7 @@ export default class ChatCreateModal extends ChatModal {
           app.alerts.show({ type: 'error' }, app.translator.trans('xelson-chat.forum.chat.create.failed'));
         }
       });
+
     this.hide();
   }
 
@@ -164,7 +158,7 @@ export default class ChatCreateModal extends ChatModal {
   content() {
     return (
       <div className="Modal-body">
-        <div class="Form-group InputTitle">
+        <div className="Form-group InputTitle">  {/* [CHANGED] class -> className */}
           {app.chat.getPermissions().create.channel ? (
             <div className="ChatType">
               <div
