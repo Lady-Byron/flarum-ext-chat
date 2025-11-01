@@ -1,14 +1,15 @@
 // js/src/forum/components/ChatEditModal.js
-// [CHANGED] Import paths -> flarum/common/*
-// [CHANGED] “在初始用户中/已离开”与 PM 成员判断：统一按 id 比较，避免对象引用误判
-// [CHANGED] 踢人按钮 disabled 判定：改为 targetRole >= myRole 的数值比较，权限语义准确
+// [FIX] Import -> flarum/common/*
+// [FIX] 列表包含/比较一律按 id；“踢人”禁用条件按数值角色比较；class -> className
+// [CHANGED] 统一把 user 与 me 的比较从对象比较改为按 id 比较（避免不同实例造成误判）
 
-import Button from 'flarum/common/components/Button';         // [CHANGED]
-import Dropdown from 'flarum/common/components/Dropdown';     // [CHANGED]
-import classList from 'flarum/common/utils/classList';        // [CHANGED]
-import Model from 'flarum/common/Model';                      // [CHANGED]
-import Group from 'flarum/common/models/Group';               // [CHANGED]
-import Stream from 'flarum/common/utils/Stream';              // [CHANGED]
+import app from 'flarum/forum/app';
+import Button from 'flarum/common/components/Button';
+import Dropdown from 'flarum/common/components/Dropdown';
+import classList from 'flarum/common/utils/classList';
+import Model from 'flarum/common/Model';
+import Group from 'flarum/common/models/Group';
+import Stream from 'flarum/common/utils/Stream';
 
 import ChatModal from './ChatModal';
 
@@ -31,14 +32,13 @@ export default class ChatEditModal extends ChatModal {
     this.edited = {};
 
     this.isLocalModerator = this.isModer(app.session.user);
-    this.isLocalLeaved = !this.listHasUserById(this.initialUsers, app.session.user);     // [CHANGED]
+    this.isLocalLeaved = !this.listHasUserById(this.initialUsers, app.session.user);
   }
 
-  // [CHANGED] helper：按 id 判断某列表是否包含 user
   listHasUserById(list, user) {
     if (!user) return false;
-    const meId = user.id();
-    return (list || []).some((u) => u && u.id && u.id() === meId);
+    const id = user.id();
+    return (list || []).some((u) => u && u.id && u.id() === id);
   }
 
   title() {
@@ -48,8 +48,8 @@ export default class ChatEditModal extends ChatModal {
   onsubmit() {
     const byId = (arr) => arr.map((mdl) => (mdl ? Model.getIdentifier(mdl) : null)).filter(Boolean);
 
-    const added = byId(this.getSelectedUsers().filter((mdl) => !this.listHasUserById(this.initialUsers, mdl)));     // [CHANGED]
-    const removed = byId(this.initialUsers.filter((mdl) => !this.listHasUserById(this.getSelectedUsers(), mdl)));   // [CHANGED]
+    const added = byId(this.getSelectedUsers().filter((mdl) => !this.listHasUserById(this.initialUsers, mdl)));
+    const removed = byId(this.initialUsers.filter((mdl) => !this.listHasUserById(this.getSelectedUsers(), mdl)));
     const edited = Object.keys(this.edited).map((k) => (this.edited[k] = { id: k, ...this.edited[k] }));
 
     this.model.save({
@@ -77,7 +77,9 @@ export default class ChatEditModal extends ChatModal {
   isCreator(user) {
     return (
       user.chat_pivot(this.model.id()).role() == 2 ||
-      (!this.model.creator() && user.groups() && user.groups().some((g) => g.id() == Group.ADMINISTRATOR_ID))
+      (!this.model.creator() &&
+        user.groups() &&
+        user.groups().some((g) => g.id() == Group.ADMINISTRATOR_ID))
     );
   }
 
@@ -93,14 +95,13 @@ export default class ChatEditModal extends ChatModal {
         break;
       }
       case 'kick': {
-        const idx = this.getSelectedUsers().findIndex((u) => u && u.id && u.id() === user.id()); // [CHANGED]
+        const idx = this.getSelectedUsers().findIndex((u) => u && u.id && u.id() === user.id());
         if (idx >= 0) this.getSelectedUsers().splice(idx, 1);
         break;
       }
     }
   }
 
-  // [CHANGED] 计算数值角色（0/1/2），考虑 edited 覆盖
   roleOf(user) {
     if (!user) return 0;
     const override = this.edited[user.id()]?.role;
@@ -110,8 +111,13 @@ export default class ChatEditModal extends ChatModal {
 
   componentUserMentionDropdown(user) {
     const me = app.session.user;
-    const myRole = this.roleOf(me);                // [CHANGED]
-    const targetRole = this.roleOf(user);          // [CHANGED]
+    const myRole = this.roleOf(me);
+    const targetRole = this.roleOf(user);
+
+    // [CHANGED] 统一按 id 比较，避免不同实例导致的误判
+    const meId = me && me.id && me.id();
+    const userId = user && user.id && user.id();
+    const isSelf = String(userId) === String(meId);
 
     return (
       <Dropdown
@@ -122,23 +128,28 @@ export default class ChatEditModal extends ChatModal {
         <Button
           icon={this.isModer(user) ? 'fas fa-times' : 'fas fa-users-cog'}
           onclick={this.userMentionDropdownOnclick.bind(this, user, 'moder')}
-          disabled={user == me || !this.isCreator(me) || this.isCreator(user)}
+          disabled={isSelf || !this.isCreator(me) || this.isCreator(user)}  // [CHANGED]
         >
           {app.translator.trans('xelson-chat.forum.chat.moder')}
         </Button>
         <Button
           icon="fas fa-trash-alt"
           onclick={this.userMentionDropdownOnclick.bind(this, user, 'kick')}
-          disabled={user != me && targetRole >= myRole}   // [CHANGED] 权限逻辑：目标 ≥ 自己时禁用
+          disabled={!isSelf && targetRole >= myRole}                          // [CHANGED]
         >
-          {app.translator.trans(`xelson-chat.forum.chat.${user == me ? 'leave' : 'kick'}`)}
+          {app.translator.trans(`xelson-chat.forum.chat.${isSelf ? 'leave' : 'kick'}`)}  // [CHANGED]
         </Button>
       </Dropdown>
     );
   }
 
   userMentionContent(user) {
-    return ['@' + user.displayName(), this.isLocalModerator && !app.chat.isChatPM(this.model) ? this.componentUserMentionDropdown(user) : null];
+    return [
+      '@' + user.displayName(),
+      this.isLocalModerator && !app.chat.isChatPM(this.model)
+        ? this.componentUserMentionDropdown(user)
+        : null,
+    ];
   }
 
   userMentionOnClick(user, e) {
@@ -149,7 +160,14 @@ export default class ChatEditModal extends ChatModal {
     return this.componentFormIcon({
       title: app.translator.trans('xelson-chat.forum.chat.edit_modal.form.icon.label'),
       desc: app.translator.trans('xelson-chat.forum.chat.edit_modal.form.icon.validator', {
-        a: <a href="https://fontawesome.com/icons?m=free" tabIndex="-1" target="_blank" rel="noopener" />,  // [CHANGED]
+        a: (
+          <a
+            href="https://fontawesome.com/icons?m=free"
+            tabIndex="-1"
+            target="_blank"
+            rel="noopener"
+          />
+        ),
       }),
       stream: this.getInput().icon,
       placeholder: 'fas fa-bolt',
@@ -200,7 +218,12 @@ export default class ChatEditModal extends ChatModal {
 
   componentFormChat() {
     return this.isLocalModerator
-      ? [this.componentFormInputTitle(), this.componentFormInputColor(), this.componentFormInputIcon(), this.componentFormUsersSelect()]
+      ? [
+          this.componentFormInputTitle(),
+          this.componentFormInputColor(),
+          this.componentFormInputIcon(),
+          this.componentFormUsersSelect(),
+        ]
       : this.componentChatInfo();
   }
 
@@ -224,20 +247,23 @@ export default class ChatEditModal extends ChatModal {
         </Button>
       );
 
-    // 退出 / 返回
-    const removedBy = this.model.removed_by && this.model.removed_by();                 // [CHANGED]
+    const removedBy = this.model.removed_by && this.model.removed_by();
     const meId = app.session.user && app.session.user.id && app.session.user.id();
+
     buttons.push(
       <Button
         className="Button Button--primary Button--block ButtonLeave"
         onclick={this.onleave.bind(this)}
-        disabled={!!removedBy && String(removedBy) !== String(meId)}                    // [CHANGED]
+        disabled={!!removedBy && String(removedBy) !== String(meId)}
       >
-        {app.translator.trans(`xelson-chat.forum.chat.edit_modal.form.${this.isLocalLeaved ? 'return' : 'leave'}`)}
+        {app.translator.trans(
+          `xelson-chat.forum.chat.edit_modal.form.${this.isLocalLeaved ? 'return' : 'leave'}`
+        )}
       </Button>
     );
 
-    if (!app.chat.isChatPM(this.model) && app.chat.getPermissions().create.channel) buttons.push(this.componentDeleteChat());
+    if (!app.chat.isChatPM(this.model) && app.chat.getPermissions().create.channel)
+      buttons.push(this.componentDeleteChat());
 
     return buttons;
   }
@@ -275,11 +301,13 @@ export default class ChatEditModal extends ChatModal {
     return [
       this.deleteState == 1
         ? [
-            <br></br>,
+            <br />,
             this.componentFormInput({
               title: app.translator.trans('xelson-chat.forum.chat.edit_modal.form.delete.title'),
               desc: app.translator.trans('xelson-chat.forum.chat.edit_modal.form.delete.desc'),
-              placeholder: app.translator.trans('xelson-chat.forum.chat.edit_modal.form.delete.placeholder'),
+              placeholder: app.translator.trans(
+                'xelson-chat.forum.chat.edit_modal.form.delete.placeholder'
+              ),
               stream: this.deleteChatTitleInput,
             }),
           ]
@@ -316,7 +344,7 @@ export default class ChatEditModal extends ChatModal {
   content() {
     return (
       <div className="Modal-body">
-        <div class="Form-group InputTitle">
+        <div className="Form-group InputTitle">{/* [FIX] class -> className */}
           {this.componentForm()}
           <div className="ButtonsPadding"></div>
           {this.componentFormButtons()}
