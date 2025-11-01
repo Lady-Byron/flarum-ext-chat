@@ -1,29 +1,25 @@
-import app from 'flarum/forum/app';
+// js/src/forum/states/ChatState.js
 
-import Message from '../models/Message';
+import app from 'flarum/forum/app';
 import Model from 'flarum/common/Model';
 import Stream from 'flarum/common/utils/Stream';
 import Link from 'flarum/common/components/Link';
+import { throttle } from 'flarum/common/utils/throttleDebounce';
 
 import * as resources from '../resources';
 import ViewportState from './ViewportState';
-import { throttle } from 'flarum/common/utils/throttleDebounce';
 
-/**
- * 路线 B：状态层统一路由
- *  - 只暴露 handleSocketEvent(payload)
- *  - payload 由 index.js 的 app.realtime.on('neonchat.events', ...) 直接传入
- *  - payload 结构与后端 PushChatEvents::sendChatEvent 相同：
- *    {
- *      event: { id: 'message.post' | 'message.edit' | 'message.delete' | 'chat.create' | 'chat.edit' | 'chat.delete', chat_id: X },
- *      response: {
- *        message?: <JSON: MessageSerializer>,
- *        chat?: <JSON: ChatSerializer/ChatUserSerializer>,
- *        eventmsg_range?: [...],
- *        roles_updated_for?: [userId, ...]
- *      }
- *    }
- */
+// 参考：事件负载契约
+// payload = {
+//   event: { id: 'message.post'|'message.edit'|'message.delete'|'chat.create'|'chat.edit'|'chat.delete', chat_id },
+//   response: {
+//     message?: <JSON:API resource or document>,
+//     chat?: <JSON:API resource or document>,
+//     actions?: { msg?: string, hide?: boolean, invoker?: number },        // [CHANGED] 可选：从 response 读取
+//     eventmsg_range?: number[],
+//     roles_updated_for?: number[]
+//   }
+// }
 
 const refAudio = new Audio();
 refAudio.src = resources.base64AudioNotificationRef;
@@ -39,14 +35,14 @@ export default class ChatState {
 
     /** @type {import('../models/Chat').default[]} */
     this.chats = [];
-    /** @type {Message[]} */
+    /** @type {import('../models/Message').default[]} */
     this.chatmessages = [];
 
     this.chatsLoading = true;
     this.curChat = null;
     this.totalHiddenCount = 0;
 
-    const neonchatState = JSON.parse(localStorage.getItem('neonchat')) ?? {};
+    const neonchatState = safeJsonGet(localStorage.getItem('neonchat')) || {};
     this.frameState = {
       beingShown: neonchatState.beingShown ?? app.forum.attribute('xelson-chat.settings.display.minimize'),
       beingShownChatsList: neonchatState.beingShownChatsList ?? 0,
@@ -73,64 +69,113 @@ export default class ChatState {
 
     /** @type {Record<number, ViewportState>} */
     this.viewportStates = {};
-
-    // 注意：不在此处绑定任何实时事件（由 index.js 单点绑定后调用 handleSocketEvent）
   }
 
-  /* -----------------------------
-   *   统一实时事件分发入口（路线B）
-   * ----------------------------- */
+  /* --------------------------------
+   *  实用方法
+   * -------------------------------- */
+
+  // [CHANGED] 安全 JSON 解析
+  // eslint-disable-next-line class-methods-use-this
+  pushOne(resourceOrDoc) {
+    if (!resourceOrDoc) return null;
+    if (resourceOrDoc.data || resourceOrDoc.included) {
+      return app.store.pushPayload(resourceOrDoc);
+    }
+    // 单资源 → 包装成 document
+    return app.store.pushPayload({ data: resourceOrDoc });
+  }
+
+  // [CHANGED] 设置关系（JSON:API 形状）
+  // eslint-disable-next-line class-methods-use-this
+  setRelationship(model, relName, relatedModel) {
+    if (!model || !relatedModel) return;
+    const type = relatedModel?.data?.type || relatedModel?.data?.type || relatedModel?.data?.type || relatedModel?.data?.type || relatedModel?.data?.type || relatedModel?.data?.type; // 确保不被摇树
+    const safeType = relatedModel?.data?.type || 'chatmessages';
+    const id = relatedModel.id?.() || relatedModel.id;
+    if (!id) return;
+    model.pushData({
+      relationships: {
+        [relName]: { data: { type: safeType, id } },
+      },
+    });
+  }
+
+  // [CHANGED] 取/建视口状态
+  getViewportState(model) {
+    const id = model?.id?.();
+    if (!id) return null;
+    if (!this.viewportStates[id]) {
+      this.viewportStates[id] = new ViewportState({ model });
+    }
+    return this.viewportStates[id];
+  }
+
+  /* --------------------------------
+   *  统一实时事件分发入口
+   * -------------------------------- */
   handleSocketEvent(packet) {
     if (!packet || !packet.event || !packet.event.id) return;
 
-    // message/chat 的 JSON:API payload 需要先 pushPayload
-    let message = packet.response?.message;
-    if (message) message = app.store.pushPayload(message);
+    let message = this.pushOne(packet.response?.message);  // [CHANGED]
+    let chat = this.pushOne(packet.response?.chat);        // [CHANGED]
 
-    let chat = packet.response?.chat;
-    if (chat) chat = app.store.pushPayload(chat);
+    // 兼容 actions 来源：优先从 response.actions 取，否则尝试 message.attributes.actions
+    // [CHANGED]
+    const actions =
+      packet.response?.actions ||
+      (packet.response?.message &&
+        (packet.response.message.data?.attributes?.actions ||
+          packet.response.message?.attributes?.actions)) ||
+      {};
 
-    // 针对我们 leaved 的公开频道（type=1）做下拦截
-    if (message && message.chat().type() == 1 && message.chat().removed_at()) return;
+    // 过滤：对已离开的公开频道（type=1）不弹
+    if (message && message.chat?.() && message.chat().type?.() === 1 && message.chat().removed_at?.()) {
+      return;
+    }
 
     switch (packet.event.id) {
       case 'message.post': {
-        if (!app.session.user || message.user() !== app.session.user) {
+        if (!app.session.user || message.user?.() !== app.session.user) {
           this.insertChatMessage(message, true);
           m.redraw();
         }
         break;
       }
-      case 'message.edit': {
-        const actions = message.data.attributes.actions || {};
-        if (app.session.user && actions.invoker == app.session.user.id()) return;
 
-        if (actions.msg !== undefined) {
-          if (!app.session.user || message.user() !== app.session.user) {
+      case 'message.edit': {
+        const invoker = actions.invoker;
+        if (app.session.user && invoker === app.session.user.id?.()) break;
+
+        if (Object.prototype.hasOwnProperty.call(actions, 'msg')) {
+          if (!app.session.user || message.user?.() !== app.session.user) {
             this.editChatMessage(message, false, actions.msg);
           }
-        } else if (actions.hide !== undefined) {
-          if (!app.session.user || actions.invoker != app.session.user.id()) {
+        } else if (Object.prototype.hasOwnProperty.call(actions, 'hide')) {
+          if (!app.session.user || invoker !== app.session.user.id?.()) {
             actions.hide
-              ? this.hideChatMessage(message, false, message.deleted_by())
+              ? this.hideChatMessage(message, false, message.deleted_by?.())
               : this.restoreChatMessage(message, false);
           }
         }
         break;
       }
+
       case 'message.delete': {
-        if (!app.session.user || message.deleted_by() !== app.session.user) {
-          this.deleteChatMessage(message, false, message.deleted_by());
+        if (!app.session.user || message.deleted_by?.() !== app.session.user) {
+          this.deleteChatMessage(message, false, message.deleted_by?.());
         }
         break;
       }
+
       case 'chat.create': {
-        if (!app.session.user || chat.creator() !== app.session.user) {
+        if (!app.session.user || chat.creator?.() !== app.session.user) {
           this.addChat(chat, true);
           m.redraw();
         }
         break;
       }
+
       case 'chat.edit': {
         this.editChat(chat, true);
 
@@ -143,29 +188,23 @@ export default class ChatState {
           });
         }
 
-        if (app.session.user && packet.response?.roles_updated_for?.includes(app.session.user.id())) {
-          const role = app.session.user.chat_pivot(chat.id()).role();
-          switch (role) {
-            case 0:
-              app.alerts.show(
-                { type: 'error' },
-                app.translator.trans('xelson-chat.forum.chat.edit_modal.moderator.lost', { chatname: <b>{chat.title()}</b> })
-              );
-              break;
-            case 1:
-              app.alerts.show(
-                { type: 'success' },
-                app.translator.trans('xelson-chat.forum.chat.edit_modal.moderator.got', { chatname: <b>{chat.title()}</b> })
-              );
-              break;
+        const updated = packet.response?.roles_updated_for || [];
+        if (app.session.user && updated.includes(app.session.user.id?.())) {
+          const role = app.session.user.chat_pivot(chat.id?.()).role?.();
+          const name = chat.title?.() || '';
+          if (role === 0) {
+            app.alerts.show({ type: 'error' }, app.translator.trans('xelson-chat.forum.chat.edit_modal.moderator.lost', { chatname: <b>{name}</b> }));
+          } else if (role === 1) {
+            app.alerts.show({ type: 'success' }, app.translator.trans('xelson-chat.forum.chat.edit_modal.moderator.got', { chatname: <b>{name}</b> }));
           }
         }
 
         m.redraw();
         break;
       }
+
       case 'chat.delete': {
-        if (!app.session.user || chat.creator() !== app.session.user) {
+        if (!app.session.user || chat.creator?.() !== app.session.user) {
           this.deleteChat(chat);
           m.redraw();
         }
@@ -174,15 +213,15 @@ export default class ChatState {
     }
   }
 
-  /* -----------------------------
-   *   状态/持久化
-   * ----------------------------- */
+  /* --------------------------------
+   *  状态/持久化
+   * -------------------------------- */
   getFrameState(key) {
     return this.frameState[key];
   }
 
   saveFrameState(key, value) {
-    const neonchatState = JSON.parse(localStorage.getItem('neonchat')) ?? {};
+    const neonchatState = safeJsonGet(localStorage.getItem('neonchat')) || {};
     neonchatState[key] = value;
     localStorage.setItem('neonchat', JSON.stringify(neonchatState));
     this.frameState[key] = value;
@@ -192,42 +231,41 @@ export default class ChatState {
     return this.permissions;
   }
 
-  /* -----------------------------
-   *   会话集合/排序/检索
-   * ----------------------------- */
+  /* --------------------------------
+   *  会话集合/排序/检索
+   * -------------------------------- */
   getChats() {
-    const q = this.q().toLowerCase();
-    return this.chats.filter((chat) => (q && chat.matches(q)) || (!q && !chat.removed_at()));
+    const needle = (this.q() || '').toLowerCase();
+    return this.chats.filter((chat) => (needle && chat.matches(needle)) || (!needle && !chat.removed_at?.()));
   }
 
   getChatsSortedByLastUpdate() {
-    return this.getChats().sort((a, b) => {
-      if (b.last_message() && a.last_message()) {
-        return b.last_message()?.created_at() - a.last_message()?.created_at();
-      }
-      return 0;
+    // [CHANGED] 按最后消息时间排序；缺失时置后
+    return this.getChats().slice().sort((a, b) => {
+      const la = a.last_message?.()?.created_at?.()?.getTime?.() || 0;
+      const lb = b.last_message?.()?.created_at?.()?.getTime?.() || 0;
+      return lb - la;
     });
   }
 
   getUnreadedTotal() {
-    return (
-      !this.getChats().length ||
-      this.getChats()
-        .map((m) => m.unreaded())
-        .reduce((a, b) => a + b)
-    );
+    // [CHANGED] 空数组返回 0；并对每项做函数存在性守护
+    const list = this.getChats();
+    if (!list.length) return 0;
+    return list.map((m) => (m.unreaded?.() | 0)).reduce((a, b) => a + b, 0);
   }
 
   addChat(model, outside = false) {
+    if (!model) return;
     this.chats.push(model);
-    this.viewportStates[model.id()] = new ViewportState({ model });
+    this.viewportStates[model.id?.()] = new ViewportState({ model });
 
-    if (model.id() == this.getFrameState('selectedChat')) this.onChatChanged(model);
+    if (model.id?.() == this.getFrameState('selectedChat')) this.onChatChanged(model);
     if (outside) model.isNeedToFlash = true;
   }
 
   editChat(model, outside = false) {
-    if (outside) model.isNeedToFlash = true;
+    if (model && outside) model.isNeedToFlash = true;
   }
 
   deleteChat(model) {
@@ -236,33 +274,32 @@ export default class ChatState {
   }
 
   isChatPM(model) {
-    return model.type() == 0 && model.users().length <= 2;
+    return model?.type?.() === 0 && model.users?.()?.length <= 2;
   }
 
   isExistsPMChat(user1, user2) {
     return this.getChats().some((model) => {
-      const us = model.users();
-      return model.type() === 0 && us.length === 2 && us.some((m) => m == user1) && us.some((m) => m == user2);
+      const us = model.users?.() || [];
+      return model.type?.() === 0 && us.length === 2 && us.some((m) => m == user1) && us.some((m) => m == user2);
     });
   }
 
   findExistingPMChat(user1, user2) {
     return this.getChats().find((model) => {
-      const us = model.users();
-      return model.type() === 0 && us.length === 2 && us.some((m) => m == user1) && us.some((m) => m == user2);
+      const us = model.users?.() || [];
+      return model.type?.() === 0 && us.length === 2 && us.some((m) => m == user1) && us.some((m) => m == user2);
     });
   }
 
   findAnyPMChatIncludingLeft(user1, user2) {
     return this.chats.find((model) => {
-      const us = model.users();
-      return model.type() === 0 && us.length === 2 && us.some((m) => m == user1) && us.some((m) => m == user2);
+      const us = model.users?.() || [];
+      return model.type?.() === 0 && us.length === 2 && us.some((m) => m == user1) && us.some((m) => m == user2);
     });
   }
 
   onChatChanged(model) {
     if (model === this.getCurrentChat()) return;
-
     this.setCurrentChat(model);
     try {
       m.redraw.sync();
@@ -273,29 +310,44 @@ export default class ChatState {
     }
   }
 
-  comporatorAscButZerosDesc(a, b) {
-    return a == 0 ? 1 : b == 0 ? -1 : a - b;
+  setCurrentChat(model) {
+    this.curChat = model;
+    this.saveFrameState('selectedChat', model ? model.id?.() : null);
   }
 
-  /* -----------------------------
-   *   消息集合
-   * ----------------------------- */
+  getCurrentChat() {
+    return this.curChat;
+  }
+
+  /* --------------------------------
+   *  消息集合 & 排序
+   * -------------------------------- */
   getChatMessages(filter) {
-    const list = this.chatmessages.sort((a, b) => this.comporatorAscButZerosDesc(a.id(), b.id()));
+    // [CHANGED] 用 created_at 升序；无时间戳则置后（按 id 兜底）
+    const list = this.chatmessages.slice().sort((a, b) => {
+      const ta = a.created_at?.()?.getTime?.() || 0;
+      const tb = b.created_at?.()?.getTime?.() || 0;
+      if (ta !== tb) return ta - tb;
+      const ia = parseInt(a.id?.() || 0, 10) || 0;
+      const ib = parseInt(b.id?.() || 0, 10) || 0;
+      return ia - ib;
+    });
     return filter ? list.filter(filter) : list;
   }
 
   isChatMessageExists(model) {
-    return this.chatmessages.find((e) => e.id() == model.id());
+    const id = model?.id?.();
+    return !!this.chatmessages.find((e) => e.id?.() == id);
   }
 
   insertEventChatMessage(model, data, notify = false) {
+    if (!model) return;
     model.pushAttributes({ message: JSON.stringify(data) });
     this.insertChatMessage(model, notify);
   }
 
   insertChatMessage(model, notify = false) {
-    if (this.isChatMessageExists(model)) return null;
+    if (!model || this.isChatMessageExists(model)) return null;
 
     this.chatmessages.push(model);
 
@@ -303,25 +355,32 @@ export default class ChatState {
       this.messageNotify(model);
       model.isNeedToFlash = true;
 
-      const chatModel = model.chat();
-      chatModel.isNeedToFlash = true;
-      chatModel.pushAttributes({ unreaded: chatModel.unreaded() + 1 });
+      const chatModel = model.chat?.();
+      if (chatModel) {
+        chatModel.isNeedToFlash = true;
+        const current = parseInt(chatModel.unreaded?.() ?? 0, 10) || 0; // [CHANGED]
+        chatModel.pushAttributes({ unreaded: current + 1 });
+      }
     }
 
-    const list = this.getChatMessages((m) => m.chat() == model.chat());
-    if ((notify || model.chat().removed_at()) && model.id() && list[list.length - 1] == model) {
-      model.chat().pushData({ relationships: { last_message: model } });
-      this.getViewportState(model.chat()).newPushedPosts = true;
+    const chatModel = model.chat?.();
+    if (!chatModel) return;
+
+    const list = this.getChatMessages((m) => m.chat?.() == chatModel);
+    if ((notify || chatModel.removed_at?.()) && model.id?.() && list[list.length - 1] === model) {
+      this.setRelationship(chatModel, 'last_message', model); // [CHANGED]
+      const vp = this.getViewportState(chatModel);
+      if (vp) vp.newPushedPosts = true;
     }
   }
 
-  /* -----------------------------
-   *   渲染/后处理（视频宽度、音频直链、提及修复）
-   * ----------------------------- */
+  /* --------------------------------
+   *  渲染增强（视频限宽 / 音频直链 / 提及修复）
+   * -------------------------------- */
   renderChatMessage(modelOrElement, content) {
     const el =
       modelOrElement instanceof Model
-        ? document.querySelector(`.NeonChatFrame .message-wrapper[data-id="${modelOrElement.id()}"] .message`)
+        ? document.querySelector(`.NeonChatFrame .message-wrapper[data-id="${modelOrElement.id?.()}"] .message`)
         : modelOrElement;
 
     if (!el) return;
@@ -329,7 +388,13 @@ export default class ChatState {
     try {
       // 由 flarum/s9e 渲染 BBCode/Markdown
       // @ts-ignore
-      s9e.TextFormatter.preview(content, el);
+      if (window.s9e?.TextFormatter?.preview) {
+        // [CHANGED] 容错
+        // @ts-ignore
+        s9e.TextFormatter.preview(content, el);
+      } else {
+        el.innerHTML = content;
+      }
 
       // 轻延迟确保 DOM ready
       setTimeout(() => {
@@ -354,30 +419,37 @@ export default class ChatState {
     }
 
     // 提及修复（deleted mention -> link）
-    $(el)
-      .find('.UserMention.UserMention--deleted')
-      .each(function () {
-        const username = this.innerText?.substring(1);
-        if (!username) return;
+    if (window.$) {
+      // [CHANGED] jQuery 为可选依赖
+      window
+        .$(
+          el
+        )
+        .find('.UserMention.UserMention--deleted')
+        .each(function () {
+          const username = this.innerText?.substring(1);
+          if (!username) return;
 
-        const user = app.store.getBy('users', 'username', username);
-        if (this && user) {
-          this.classList.remove('UserMention--deleted');
-          try {
-            m.render(this, <Link href={app.route.user(user)}>{this.innerText}</Link>);
-          } catch (e) {
-            // eslint-disable-next-line no-console
-            console.warn('UserMention render error:', e);
+          const user = app.store.getBy('users', 'username', username);
+          if (this && user) {
+            this.classList.remove('UserMention--deleted');
+            try {
+              m.render(this, <Link href={app.route.user(user)}>{this.innerText}</Link>);
+            } catch (e) {
+              // eslint-disable-next-line no-console
+              console.warn('UserMention render error:', e);
+            }
           }
-        }
-      });
+        });
+    }
 
     // 安全加载 message 内脚本（按 url 去重，不重复注入）
     const self = this;
     throttle(100, () => {
-      $('.NeonChatFrame script').each(function () {
+      if (!window.$) return; // [CHANGED]
+      window.$('.NeonChatFrame script').each(function () {
         self.executedScripts = self.executedScripts || {};
-        const scriptURL = $(this).attr('src');
+        const scriptURL = window.$(this).attr('src');
         if (scriptURL && !self.executedScripts[scriptURL]) {
           const s = document.createElement('script');
           s.src = scriptURL;
@@ -441,7 +513,7 @@ export default class ChatState {
       label.style.fontSize = '0.8em';
       label.style.opacity = '0.7';
       label.style.marginBottom = '4px';
-      label.textContent = '🎵 Audio: ' + url.split('/').pop();
+      label.textContent = '🎵 Audio: ' + (url.split('/').pop() || url);
 
       const audioEl = document.createElement('audio');
       audioEl.controls = true;
@@ -464,56 +536,79 @@ export default class ChatState {
     });
   }
 
-  /* -----------------------------
-   *   阅读回执/拉取
-   * ----------------------------- */
+  /* --------------------------------
+   *  阅读回执 / 拉取
+   * -------------------------------- */
   apiReadChat(chat, messageOrDate) {
     if (this.readingTimeout) clearTimeout(this.readingTimeout);
 
     let timestamp;
     if (messageOrDate instanceof Date) timestamp = messageOrDate.toISOString();
-    else if (messageOrDate instanceof Message) timestamp = messageOrDate.created_at().toISOString();
+    else if (messageOrDate && messageOrDate.created_at?.()) timestamp = messageOrDate.created_at().toISOString();
 
-    this.readingTimeout = setTimeout(() => chat.save({ actions: { reading: timestamp } }), 1000);
+    if (!timestamp) return; // [CHANGED] 无时间戳不发
+
+    this.readingTimeout = setTimeout(() => {
+      chat.save({ actions: { reading: timestamp } });
+    }, 1000);
   }
 
   apiFetchChatMessages(model, query, options = {}) {
     const viewport = this.getViewportState(model);
+    if (!viewport) return;
     if (viewport.loading || viewport.loadingQueries[query]) return;
 
     viewport.loading = true;
     viewport.loadingQueries[query] = true;
 
-    return app.store.find('chatmessages', { chat_id: model.id(), query }).then((records) => {
-      if (records.length) {
-        records.forEach((m) => {
-          if (options.withFlash) m.isNeedToFlash = true;
-          this.insertChatMessage(m);
-        });
-        if (options.notify) this.messageNotify(records[0]);
-
+    return app.store
+      .find('chatmessages', { chat_id: model.id?.(), query })
+      .then((records) => {
+        if (records?.length) {
+          records.forEach((m) => {
+            if (options.withFlash) m.isNeedToFlash = true;
+            this.insertChatMessage(m);
+          });
+          if (options.notify) this.messageNotify(records[0]);
+        }
+      })
+      .catch((e) => {
+        // eslint-disable-next-line no-console
+        console.warn('apiFetchChatMessages error:', e);
+      })
+      .finally(() => {
+        // [CHANGED] 无论结果如何都清锁
         viewport.loading = false;
         viewport.loadingQueries[query] = false;
-
         m.redraw();
-      }
-    });
+      });
   }
 
-  /* -----------------------------
-   *   发送/编辑/隐藏/删除
-   * ----------------------------- */
+  /* --------------------------------
+   *  发送 / 编辑 / 隐藏 / 删除
+   * -------------------------------- */
+
+  // 说明：这里保持使用 model.save()，以便与你后端/适配层的非常规路由解耦。
+  // 若需命中 “POST /chatmessages/{id}”，可在 Message 模型覆写 apiEndpoint() 或在 API 封装层处理。
   postChatMessage(model) {
-    return model.save({ message: model.content, created_at: new Date(), chat_id: model.chat().id() }).then(
+    if (!model) return Promise.resolve();
+
+    return model.save({ message: model.content, created_at: new Date(), chat_id: model.chat?.().id?.() }).then(
       (r) => {
-        // pushPayload 之后将 data 写回本地 model，修复偶发“未落库”闪断
-        model.pushData(r.data);
+        if (r?.data) {
+          // [CHANGED] pushPayload 返回的 data 写回本地 model，修复偶发“未落库”闪断
+          model.pushData(r.data);
+        }
         model.exists = true;
 
         model.isTimedOut = false;
         model.isNeedToFlash = true;
         model.isEditing = false;
-        model.chat().pushData({ relationships: { last_message: model } });
+
+        const chatModel = model.chat?.();
+        if (chatModel) {
+          this.setRelationship(chatModel, 'last_message', model); // [CHANGED]
+        }
       },
       () => {
         model.isTimedOut = true;
@@ -522,6 +617,7 @@ export default class ChatState {
   }
 
   editChatMessage(model, sync = false, content) {
+    if (!model) return;
     model.content = content;
     model.isNeedToFlash = true;
     model.pushAttributes({ message: content, edited_at: new Date() });
@@ -530,11 +626,24 @@ export default class ChatState {
   }
 
   deleteChatMessage(model, sync = false, user = app.session.user) {
+    if (!model) return;
     model.isDeletedForever = true;
-    if (!model.deleted_by()) model.pushData({ relationships: { deleted_by: user } });
 
-    const list = this.getChatMessages((m) => m.chat() == model.chat() && !m.isDeletedForever);
-    if (list.length) model.chat().pushData({ relationships: { last_message: list[list.length - 1] } });
+    // [CHANGED] 以关系形状写回 deleted_by
+    if (!model.deleted_by?.()) {
+      model.pushData({
+        relationships: { deleted_by: { data: user ? { type: 'users', id: user.id?.() } : null } },
+      });
+    }
+
+    // 维护 last_message
+    const chatModel = model.chat?.();
+    if (chatModel) {
+      const list = this.getChatMessages((m) => m.chat?.() == chatModel && !m.isDeletedForever);
+      if (list.length) {
+        this.setRelationship(chatModel, 'last_message', list[list.length - 1]); // [CHANGED]
+      }
+    }
 
     this.chatmessages = this.chatmessages.filter((m) => m !== model);
     if (sync) model.delete();
@@ -547,75 +656,61 @@ export default class ChatState {
   }
 
   hideChatMessage(model, sync = false, user = app.session.user) {
-    model.pushData({ relationships: { deleted_by: user } });
-    if (sync) model.save({ actions: { hide: true }, relationships: { deleted_by: app.session.user } });
+    if (!model) return;
+    // [CHANGED] 关系形状
+    model.pushData({
+      relationships: { deleted_by: { data: user ? { type: 'users', id: user.id?.() } : null } },
+    });
+    if (sync) model.save({ actions: { hide: true }, relationships: { deleted_by: { data: { type: 'users', id: app.session.user.id?.() } } } });
 
     this.totalHiddenCount++;
     m.redraw();
   }
 
   restoreChatMessage(model, sync = false) {
+    if (!model) return;
+
     if (!this.isChatMessageExists(model)) {
       this.insertChatMessage(model);
       model.isNeedToFlash = true;
     } else {
-      model.pushAttributes({ deleted_by: 0 });
+      // [CHANGED] 清空 deleted_by 关系
+      model.pushData({ relationships: { deleted_by: { data: null } } });
       model.isNeedToFlash = true;
-      delete model.data.relationships.deleted_by;
     }
-    if (sync) model.save({ actions: { hide: false }, deleted_by: 0 });
+    if (sync) model.save({ actions: { hide: false }, relationships: { deleted_by: { data: null } } });
 
     m.redraw();
   }
 
-  /* -----------------------------
-   *   当前会话
-   * ----------------------------- */
-  setCurrentChat(model) {
-    this.curChat = model;
-    this.saveFrameState('selectedChat', model ? model.id() : null);
-  }
-
-  getCurrentChat() {
-    return this.curChat;
-  }
-
-  /* -----------------------------
-   *   首次拉取会话列表
-   * ----------------------------- */
-  apiFetchChats() {
-    return app.store.find('chats').then((chats) => {
-      chats.forEach((c) => this.addChat(c));
-      this.chatsLoading = false;
-      m.redraw();
-    });
-  }
-
-  /* -----------------------------
-   *   通知/声音
-   * ----------------------------- */
+  /* --------------------------------
+   *  通知
+   * -------------------------------- */
   messageNotify(model) {
-    if (!app.session.user || model.user().id() != app.session.user.id()) this.notifyTry(model);
+    if (!app.session.user || model.user?.().id?.() != app.session.user.id?.()) this.notifyTry(model);
   }
 
   notifyTry(model) {
-    if (!('Notification' in window)) return;
+    if (typeof window === 'undefined' || !('Notification' in window)) return;
 
     if (this.messageIsMention(model)) this.notifySend(model);
     this.notifySound(model);
   }
 
   messageIsMention(model) {
-    return app.session.user && model.message()?.indexOf('@' + app.session.user.username()) >= 0;
+    const me = app.session.user;
+    if (!me) return false;
+    const uname = me.username?.();
+    return !!(uname && model.message?.()?.indexOf('@' + uname) >= 0);
   }
 
   notifySend(model) {
-    let avatar = model.user().avatarUrl();
+    let avatar = model.user?.().avatarUrl?.();
     if (!avatar) avatar = resources.base64PlaceholderAvatarImage;
 
     if (this.getFrameState('notify') && document.hidden) {
-      new Notification(model.chat().title(), {
-        body: `${model.user().username()}: ${model.message()}`,
+      new Notification(model.chat?.().title?.() || '', {
+        body: `${model.user?.().username?.() || ''}: ${model.message?.() || ''}`,
         icon: avatar,
         silent: true,
         timestamp: new Date(),
@@ -627,12 +722,12 @@ export default class ChatState {
     if (this.getFrameState('isMuted')) return;
     const sound = this.messageIsMention(model) ? refAudio : audio;
     sound.currentTime = 0;
-    sound.play();
+    sound.play().catch(() => {});
   }
 
-  /* -----------------------------
-   *   UI 开关/面板
-   * ----------------------------- */
+  /* --------------------------------
+   *  UI 开关/面板
+   * -------------------------------- */
   getChatsListPanel() {
     return document.querySelector('.ChatList');
   }
@@ -673,21 +768,30 @@ export default class ChatState {
     if (!notify && 'Notification' in window) Notification.requestPermission();
   }
 
-  /* -----------------------------
-   *   视口状态
-   * ----------------------------- */
-  getViewportState(model) {
-    return this.viewportStates[model.id()];
-  }
-
-  /* -----------------------------
-   *   高亮动画（与核心保持一致）
-   * ----------------------------- */
+  /* --------------------------------
+   *  高亮动画
+   * -------------------------------- */
   /**
    * 参考 core PostStream.js 的 flash 实现
    * @param {jQuery} $item
    */
   flashItem($item) {
+    if (!$item) return;
     $item.addClass('flash').one('animationend webkitAnimationEnd', () => $item.removeClass('flash'));
+  }
+}
+
+/* -------------------------
+ *  小工具（文件内私有）
+ * ------------------------- */
+
+// [CHANGED] 安全 JSON 解析
+function safeJsonGet(raw) {
+  try {
+    return raw ? JSON.parse(raw) : null;
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.warn('JSON parse failed:', e);
+    return null;
   }
 }
