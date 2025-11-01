@@ -1,6 +1,7 @@
 // js/src/forum/states/ViewportState.js
 
 // [CHANGED] 对 preview/trim 做空值守护；本文件其余逻辑保持不变
+import app from 'flarum/forum/app';
 import Stream from 'flarum/common/utils/Stream';
 
 export default class ViewportState {
