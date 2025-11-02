@@ -640,37 +640,44 @@ export default class ChatState {
       });
   }
 
+  // ChatMessage -> ChatState 的管理动作路由（保留编辑/重发在 ViewportState）
   onChatMessageClicked(eventName, model) {
-  switch (eventName) {
-    case 'dropdownHide':
-      this.hideChatMessage(model, true);
-      break;
+    if (!model || !app.session.user) return;
 
-    case 'dropdownRestore':
-      this.restoreChatMessage(model, true);
-      break;
+    const meId = app.session.user.id?.();
+    const chat = model.chat?.();
+    if (!chat) return;
 
-    case 'dropdownDelete': {
-      const hasId =
-        (typeof model.id === 'function' && !!model.id()) ||
-        !!model?.data?.id ||
-        !!model?.attributes?.id;
+    const perms = this.getPermissions();
+    const authorId = model.user?.()?.id?.();
+    const canSelfDelete = perms.delete && authorId && String(authorId) === String(meId);
+    const isLocalModer = !!chat.role?.(); // 本地管理员（在该会话中的权限角色）
+    const deletedById = model.deleted_by?.()?.id?.();
+    const canRestore = perms.moderate?.delete || (deletedById && String(deletedById) === String(meId));
 
-      // 超时/无 id/未持久化：只做本地移除，别调用后端
-      if (model.isTimedOut || !hasId || !model.exists) {
-        this.deleteChatMessage(model, /* sync */ false);
-      } else {
-        this.deleteChatMessage(model, /* sync */ true);
+    switch (eventName) {
+      case 'dropdownHide': {
+        // 软删除（作者本人或会话管理员）
+        if (canSelfDelete || isLocalModer) this.hideChatMessage(model, true);
+        break;
       }
-      break;
+      case 'dropdownRestore': {
+        // 还原（管理员或本人）
+        if (canRestore) this.restoreChatMessage(model, true);
+        break;
+      }
+      case 'dropdownDelete': {
+        // 永久删除：需要 delete 权限，并且（会话管理员 或 已软删 或 达到阈值）
+        if (perms.delete && (isLocalModer || model.deleted_by?.() || this.totalHidden() >= 3)) {
+          this.deleteChatMessage(model, true);
+        }
+        break;
+      }
+      default:
+        // 其它事件（编辑开始/重发/插入提及）由 ViewportState 处理
+        break;
     }
-
-    default:
-      break;
   }
-}
-
-
 
   /* --------------------------------
    *  发送 / 编辑 / 隐藏 / 删除
@@ -727,7 +734,7 @@ export default class ChatState {
       }
     }
 
-    this.chatmessages = this.chatmessages.filter((m) => m?.id?.() !== model?.id?.());
+    this.chatmessages = this.chatmessages.filter((m) => m !== model);
     if (sync) model.delete();
 
     m.redraw();
