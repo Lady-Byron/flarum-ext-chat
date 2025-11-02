@@ -640,29 +640,36 @@ export default class ChatState {
       });
   }
 
-  // ChatMessage -> ChatState 的管理动作路由（保留编辑/重发在 ViewportState）
-onChatMessageClicked(eventName, model) {
+  onChatMessageClicked(eventName, model) {
   switch (eventName) {
     case 'dropdownHide':
-      // 软删除（可恢复）
       this.hideChatMessage(model, true);
       break;
 
     case 'dropdownRestore':
-      // 还原软删除
       this.restoreChatMessage(model, true);
       break;
 
-    case 'dropdownDelete':
-      // 永久删除
-      this.deleteChatMessage(model, true);
-      break;
+    case 'dropdownDelete': {
+      const hasId =
+        (typeof model.id === 'function' && !!model.id()) ||
+        !!model?.data?.id ||
+        !!model?.attributes?.id;
 
-    // 其余事件（编辑开始/重发/插入提及）由 ViewportState 处理
+      // 超时/无 id/未持久化：只做本地移除，别调用后端
+      if (model.isTimedOut || !hasId || !model.exists) {
+        this.deleteChatMessage(model, /* sync */ false);
+      } else {
+        this.deleteChatMessage(model, /* sync */ true);
+      }
+      break;
+    }
+
     default:
       break;
   }
 }
+
 
 
   /* --------------------------------
