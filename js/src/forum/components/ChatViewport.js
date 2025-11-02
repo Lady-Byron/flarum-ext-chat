@@ -1,5 +1,20 @@
-import Component from 'flarum/Component';
-import LoadingIndicator from 'flarum/components/LoadingIndicator';
+// js/src/forum/components/ChatViewport.js
+// [FIX] 1.8 路径 & 导入 app
+// [CHANGED] 全面改为“按 id 比较（字符串化）”，避免“同 id 不同实例”漏配
+// [CHANGED] loadChat(): 基于实际滚动容器计算回滚位置（wrapper / documentElement）
+// [FIX] Loader 读取 this.state.loading（原误读 this.state.scroll.loading）
+// [CHANGED] getChatWrapper(): 优先返回当前实例的 this.wrapperEl，避免全局选择器误配
+// [FIX] 将所有使用 el.offsetHeight / wrapper.offsetHeight 的位置统一改为 clientHeight，
+//      以兼容 document.documentElement 作为滚动容器的场景（移动端 ChatPage）
+// [FIX] wrapperOnBeforeUpdate(): 使用 this.state.scroll.autoScroll（原误用 this.state.autoScroll）
+// [FIX] 小坑 A：checkUnreaded() 查询消息节点限定在当前视口作用域（this.element）
+// [FIX] 小坑 B：scrollToAnchor() 用矩形差计算相对位移，兼容 documentElement/.wrapper
+// [HARDEN] 加固 1：loadChat() 回滚定位加定时器防抖，切会话频繁不叠加
+// [HARDEN] 加固 2：wrapperOnScroll() 缓存本次回调使用的 state，避免切会话竞态
+
+import app from 'flarum/forum/app';
+import Component from 'flarum/common/Component';
+import LoadingIndicator from 'flarum/common/components/LoadingIndicator';
 
 import ChatInput from './ChatInput';
 import ChatMessage from './ChatMessage';
@@ -10,356 +25,443 @@ import timedRedraw from '../utils/timedRedraw';
 import ChatPage from './ChatPage';
 
 export default class ChatViewport extends Component {
-    oninit(vnode) {
-        super.oninit(vnode);
+  oninit(vnode) {
+    super.oninit(vnode);
+    this.model = this.attrs.chatModel;
+    if (this.model) this.state = app.chat.getViewportState(this.model);
+  }
 
-        this.model = this.attrs.chatModel;
-        if (this.model) {
-            this.state = app.chat.getViewportState(this.model);
-        }
-    }
+  oncreate(vnode) {
+    super.oncreate(vnode);
+    this.loadChat();
+  }
 
-    oncreate(vnode) {
-        super.oncreate(vnode);
+  onupdate(vnode) {
+    super.onupdate(vnode);
+    const model = vnode.attrs.chatModel;
+
+    if (model !== this.model) {
+      this.model = model;
+      if (this.model) {
+        this.state = app.chat.getViewportState(this.model);
         this.loadChat();
+      }
+      const jq = this.$ ? this.$('.wrapper') : (window.$ && window.$('.wrapper'));
+      if (jq) app.chat.flashItem(jq);
     }
+  }
 
-    onupdate(vnode) {
-        super.onupdate(vnode);
+  loadChat() {
+    if (!this.state) return;
 
-        // this.attrs is broken in onupdate hook
-        const model = vnode.attrs.chatModel;
+    const oldScroll = Number(this.state.scroll.oldScroll || 0);
+    this.reloadMessages();
+    m.redraw();
 
-        if (model !== this.model) {
-            this.model = model;
-            if (this.model) {
-                this.state = app.chat.getViewportState(this.model);
-                this.loadChat();
-            }
-            app.chat.flashItem($('.wrapper'));
-        }
-    }
+    // [HARDEN] 防抖，避免频繁切会话导致多次定位叠加
+    if (this._loadTimer) clearTimeout(this._loadTimer);
+    this._loadTimer = setTimeout(() => {
+      const chatWrapper = this.getChatWrapper();
+      if (
+        chatWrapper &&
+        Number.isFinite(chatWrapper.scrollHeight) &&
+        Number.isFinite(chatWrapper.clientHeight)
+      ) {
+        const nextTop = Math.max(0, chatWrapper.scrollHeight - chatWrapper.clientHeight - oldScroll);
+        chatWrapper.scrollTop = nextTop;
+      }
+    }, 200);
+  }
 
-    loadChat() {
-        if (!this.state) return;
-
-        const oldScroll = this.state.scroll.oldScroll;
-        this.reloadMessages();
-        m.redraw();
-
-        setTimeout(() => {
-            const element = this.element;
-            const chatWrapper = this.getChatWrapper();
-            
-            if (element && chatWrapper && element.scrollHeight !== undefined && element.clientHeight !== undefined) {
-                chatWrapper.scrollTop = element.scrollHeight - element.clientHeight - oldScroll;
-            }
-        }, 200);
-    }
-
-    view(vnode) {
-        if (this.model) {
-            return (
-                <div className="ChatViewport">
-                    <div
-                        className="wrapper"
-                        oncreate={this.wrapperOnCreate.bind(this)}
-                        onbeforeupdate={this.wrapperOnBeforeUpdate.bind(this)}
-                        onupdate={this.wrapperOnUpdate.bind(this)}
-                        onremove={this.wrapperOnRemove.bind(this)}
-                    >
-                        {this.componentLoader(this.state.scroll.loading)}
-                        {this.componentsChatMessages(this.model).concat(
-                            this.state.input.writingPreview ? this.componentChatMessage(this.state.input.previewModel) : []
-                        )}
-                    </div>
-                    <ChatInput
-                        state={this.state}
-                        model={this.model}
-                        oninput={() => {
-                            if (this.nearBottom() && !this.state.messageEditing) {
-                                this.scrollToBottom();
-                            }
-                        }}
-                    ></ChatInput>
-                    {this.isFastScrollAvailable() ? this.componentScroller() : null}
-                </div>
-            );
-        }
-
-        return (
-            <div className="ChatViewport">
-                <ChatWelcome />;
-            </div>
-        );
-    }
-
-    componentChatMessage(model) {
-        return model.type() ? <ChatEventMessage key={model.id()} model={model} /> : <ChatMessage key={model.id()} model={model} />;
-    }
-
-    componentsChatMessages(chat) {
-        return app.chat.getChatMessages().map((model) => this.componentChatMessage(model));
-    }
-
-    componentScroller() {
-        return (
-            <div className="scroller" onclick={this.fastScroll.bind(this)}>
-                <i class="fas fa-angle-down"></i>
-            </div>
-        );
-    }
-
-    componentLoader(watch) {
-        return watch ? (
-            <msgloader className="message-wrapper--loading">
-                <LoadingIndicator className="loading-old Button-icon" />
-            </msgloader>
-        ) : null;
-    }
-    getChatWrapper() {
-        if (app.screen() === 'phone' && app.current.matches(ChatPage)) {
-            return document.documentElement;
-        }
-        const wrapper = document.querySelector('.ChatViewport .wrapper');
-        return wrapper || null;
-    }
-
-    isFastScrollAvailable() {
-        if (!this.state || !this.model) return false;
-        let chatWrapper = this.getChatWrapper();
-        if (!chatWrapper) return false;
-        
-        return (
-            (this.state.newPushedPosts ||
-                this.model.unreaded() >= 30 ||
-                (chatWrapper.scrollHeight > 2000 && chatWrapper.scrollTop < chatWrapper.scrollHeight - 2000)) &&
-            !this.nearBottom()
-        );
-    }
-
-    fastScroll(e) {
-        if (!this.model) return;
-        if (this.model.unreaded() >= 30) this.fastMessagesFetch(e);
-        else {
-            let chatWrapper = this.getChatWrapper();
-            if (chatWrapper) {
-                chatWrapper.scrollTop = Math.max(chatWrapper.scrollTop, chatWrapper.scrollHeight - 3000);
+  view() {
+    if (this.model) {
+      return (
+        <div className="ChatViewport">
+          <div
+            className="wrapper"
+            oncreate={this.wrapperOnCreate.bind(this)}
+            onbeforeupdate={this.wrapperOnBeforeUpdate.bind(this)}
+            onupdate={this.wrapperOnUpdate.bind(this)}
+            onremove={this.wrapperOnRemove.bind(this)}
+          >
+            {this.componentLoader(this.state?.loading)}
+            {this.componentsChatMessages(this.model).concat(
+              this.state.input.writingPreview ? this.componentChatMessage(this.state.input.previewModel) : []
+            )}
+          </div>
+          <ChatInput
+            state={this.state}
+            model={this.model}
+            oninput={() => {
+              if (this.nearBottom() && !this.state.messageEditing) {
                 this.scrollToBottom();
-            }
-        }
+              }
+            }}
+          />
+          {this.isFastScrollAvailable() ? this.componentScroller() : null}
+        </div>
+      );
     }
 
-    fastMessagesFetch(e) {
-        e.redraw = false;
-        app.chat.chatmessages = [];
+    return (
+      <div className="ChatViewport">
+        <ChatWelcome />
+      </div>
+    );
+  }
 
-        app.chat.apiFetchChatMessages(this.model).then((r) => {
-            this.scrollToBottom();
-            timedRedraw(300);
+  componentChatMessage(model) {
+    return model.type()
+      ? <ChatEventMessage key={model.id()} model={model} />
+      : <ChatMessage key={model.id()} model={model} />;
+  }
 
+  // [CHANGED] 用 id 比较，规避“同 id 不同实例”漏配
+  componentsChatMessages(chat) {
+    const chatId = String(chat?.id?.() ?? '');
+    return app.chat
+      .getChatMessages((mdl) => String(mdl.chat()?.id?.() ?? '') === chatId)
+      .map((model) => this.componentChatMessage(model));
+  }
+
+  componentScroller() {
+    return (
+      <div className="scroller" onclick={this.fastScroll.bind(this)}>
+        <i className="fas fa-angle-down"></i>
+      </div>
+    );
+  }
+
+  componentLoader(watch) {
+    return watch ? (
+      <msgloader className="message-wrapper--loading">
+        <LoadingIndicator className="loading-old Button-icon" />
+      </msgloader>
+    ) : null;
+  }
+
+  isPhone() {
+    return (
+      typeof window !== 'undefined' &&
+      window.matchMedia &&
+      window.matchMedia('(max-width: 768px)').matches
+    );
+  }
+
+  getChatWrapper() {
+    if (this.isPhone() && app.current.matches?.(ChatPage)) {
+      return document.documentElement;
+    }
+    if (this.wrapperEl) return this.wrapperEl; // [CHANGED] 优先当前实例 wrapper
+    const wrapper = this.element?.querySelector?.('.wrapper')
+      || document.querySelector('.ChatViewport .wrapper');
+    return wrapper || null;
+  }
+
+  isFastScrollAvailable() {
+    if (!this.state || !this.model) return false;
+    const chatWrapper = this.getChatWrapper();
+    if (!chatWrapper) return false;
+
+    return (
+      (this.state.newPushedPosts ||
+        this.model.unreaded() >= 30 ||
+        (chatWrapper.scrollHeight > 2000 &&
+          chatWrapper.scrollTop < chatWrapper.scrollHeight - 2000)) &&
+      !this.nearBottom()
+    );
+  }
+
+  fastScroll(e) {
+    if (!this.model) return;
+    if (this.model.unreaded() >= 30) this.fastMessagesFetch(e);
+    else {
+      const chatWrapper = this.getChatWrapper();
+      if (chatWrapper) {
+        chatWrapper.scrollTop = Math.max(
+          chatWrapper.scrollTop,
+          chatWrapper.scrollHeight - 3000
+        );
+        this.scrollToBottom();
+      }
+    }
+  }
+
+  fastMessagesFetch(e) {
+    e.redraw = false;
+    app.chat.chatmessages = [];
+
+    app.chat.apiFetchChatMessages(this.model).then(() => {
+      this.scrollToBottom();
+      timedRedraw(300);
+
+      this.model.pushAttributes({ unreaded: 0 });
+      // [CHANGED] 用 id 比较
+      const message = app.chat
+        .getChatMessages((mdl) => String(mdl.chat()?.id?.() ?? '') === String(this.model?.id?.() ?? ''))
+        .slice(-1)[0];
+      app.chat.apiReadChat(this.model, message);
+    });
+  }
+
+  wrapperOnCreate(vnode) {
+    super.oncreate(vnode);
+    this.wrapperEl = vnode.dom;            // [CHANGED]
+    this.wrapperOnUpdate(vnode);
+
+    const target = app.current.matches?.(ChatPage) ? window : this.wrapperEl;
+    this.boundScrollTarget = target;
+    this.boundScrollListener = this.wrapperOnScroll.bind(this);
+    target.addEventListener('scroll', this.boundScrollListener, { passive: true });
+  }
+
+  wrapperOnBeforeUpdate(vnode, vnodeNew) {
+    try {
+      super.onbeforeupdate(vnode, vnodeNew);
+      if (
+        !this.state ||
+        !this.state.scroll?.autoScroll ||   // [FIX] 使用 this.state.scroll.autoScroll
+        !this.nearBottom() ||
+        !this.state.newPushedPosts
+      ) {
+        return;
+      }
+      this.scrollAfterUpdate = true;
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.warn('ChatViewport wrapperOnBeforeUpdate error:', e);
+    }
+  }
+
+  wrapperOnUpdate(vnode) {
+    try {
+      super.onupdate(vnode);
+      const el = this.getChatWrapper();
+      if (!el) return;
+
+      if (this.model && this.state && this.state.scroll.autoScroll) {
+        if (this.autoScrollTimeout) clearTimeout(this.autoScrollTimeout);
+        this.autoScrollTimeout = setTimeout(this.scrollToBottom.bind(this, true), 100);
+      }
+      if (el.scrollTop <= 0) el.scrollTop = 1;
+      this.checkUnreaded();
+
+      if (this.scrollAfterUpdate) {
+        this.scrollAfterUpdate = false;
+        this.scrollToBottom();
+      }
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.warn('ChatViewport wrapperOnUpdate error:', e);
+    }
+  }
+
+  wrapperOnRemove(vnode) {
+    try {
+      super.onremove(vnode);
+      // [HARDEN] 清理 loadChat 防抖定时器
+      if (this._loadTimer) { clearTimeout(this._loadTimer); this._loadTimer = null; }
+      if (this.boundScrollListener && this.boundScrollTarget) {
+        this.boundScrollTarget.removeEventListener('scroll', this.boundScrollListener);
+        this.boundScrollListener = null;
+        this.boundScrollTarget = null;
+      }
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.warn('ChatViewport wrapperOnRemove error:', e);
+    }
+  }
+
+  wrapperOnScroll(e) {
+    const el = app.current.matches?.(ChatPage) ? document.documentElement : e.currentTarget;
+    const state = this.state;                         // [HARDEN] 捕获当次回调所用 state
+    if (!el || !state) return;
+
+    state.scroll.oldScroll = el.scrollHeight - el.clientHeight - el.scrollTop; // [FIX] clientHeight
+
+    this.checkUnreaded();
+
+    if (this.lastFastScrollStatus != this.isFastScrollAvailable()) {
+      this.lastFastScrollStatus = this.isFastScrollAvailable();
+      m.redraw();
+    }
+
+    const currentHeight = el.scrollHeight;
+
+    if (this.atBottom()) {
+      state.newPushedPosts = false;
+    }
+
+    if (state.scroll.autoScroll || state.loading || this.scrolling) return;
+
+    if (!state.messageEditing && el.scrollTop >= 0) {
+      if (el.scrollTop <= 500) {
+        // [CHANGED] 用 id 比较
+        const topMessage = app.chat
+          .getChatMessages((model) => String(model.chat()?.id?.() ?? '') === String(this.model?.id?.() ?? ''))[0];
+        if (topMessage && topMessage != this.model.first_message()) {
+          app.chat.apiFetchChatMessages(this.model, topMessage.created_at().toISOString());
+        }
+      } else if (el.scrollTop + el.clientHeight >= currentHeight - 500) { // [FIX] clientHeight
+        // [CHANGED] 用 id 比较
+        const bottomMessage = app.chat
+          .getChatMessages((model) => String(model.chat()?.id?.() ?? '') === String(this.model?.id?.() ?? ''))
+          .slice(-1)[0];
+        if (bottomMessage && bottomMessage != this.model.last_message()) {
+          app.chat.apiFetchChatMessages(this.model, bottomMessage.created_at().toISOString());
+        }
+      }
+    }
+  }
+
+  checkUnreaded() {
+    const wrapper = this.getChatWrapper();
+    if (wrapper && this.model && this.model.unreaded() && app.chat.chatIsShown()) {
+      // [CHANGED] 用 id 比较 + 仅取未读区间
+      const list = app.chat.getChatMessages(
+        (mdl) =>
+          String(mdl.chat()?.id?.() ?? '') === String(this.model?.id?.() ?? '') &&
+          mdl.created_at() >= this.model.readed_at() &&
+          !mdl.isReaded
+      );
+
+      for (const message of list) {
+        // [FIX] 小坑 A：限定作用域在当前视口，避免命中另一个视口
+        const scope = this.element || document;
+        const msg = scope.querySelector(`.message-wrapper[data-id="${message.id()}"]`);
+        if (!msg) continue;
+
+        // [FIX] 小坑 B 同类：用矩形差判断是否进入可视区，兼容 documentElement / .wrapper
+        const msgTop = msg.getBoundingClientRect().top;
+        const wrapRectTop = wrapper.getBoundingClientRect().top;
+        const visibleBottom = wrapRectTop + wrapper.clientHeight;
+
+        if (msgTop <= visibleBottom) {
+          message.isReaded = true;
+
+          if (this.state.scroll.autoScroll && app.chat.getCurrentChat() == this.model) {
+            app.chat.apiReadChat(this.model, new Date());
             this.model.pushAttributes({ unreaded: 0 });
-            let message = app.chat.getChatMessages((mdl) => mdl.chat() == this.model).slice(-1)[0];
+          } else {
             app.chat.apiReadChat(this.model, message);
-        });
+            this.model.pushAttributes({ unreaded: this.model.unreaded() - 1 });
+          }
+
+          m.redraw();
+        }
+      }
+    }
+  }
+
+  // [FIX] 改为矩形差定位，兼容不同滚动容器
+  scrollToAnchor(anchor) {
+    let element;
+    if (anchor instanceof Message) {
+      const jq = this.$ ? this.$(`.message-wrapper[data-id="${anchor.id()}"]`) : null;
+      element = jq ? jq[0] : document.querySelector(`.message-wrapper[data-id="${anchor.id()}"]`);
+    } else {
+      element = anchor;
     }
 
-    wrapperOnCreate(vnode) {
-        super.oncreate(vnode);
-        this.wrapperOnUpdate(vnode);
+    const chatWrapper = this.getChatWrapper();
+    if (!chatWrapper || !element) return setTimeout(() => this.scrollToAnchor(anchor), 100);
 
-        (app.current.matches(ChatPage) ? window : vnode.dom).addEventListener(
-            'scroll',
-            (this.boundScrollListener = this.wrapperOnScroll.bind(this)),
-            { passive: true }
-        );
+    const elRect  = element.getBoundingClientRect();
+    const ctRect  = chatWrapper.getBoundingClientRect();
+    const targetTop = Math.max((elRect.top - ctRect.top) + chatWrapper.scrollTop - element.clientHeight, 0);
+
+    const jq = window.$ && window.$(chatWrapper);
+    if (jq && jq.stop && jq.animate) {
+      jq.stop().animate({ scrollTop: targetTop }, 500);
+    } else {
+      chatWrapper.scrollTo({ top: targetTop, behavior: 'smooth' });
     }
+  }
 
-    wrapperOnBeforeUpdate(vnode, vnodeNew) {
-        try {
-            super.onbeforeupdate(vnode, vnodeNew);
-            if (!this.state || !this.state.autoScroll || !this.nearBottom() || !this.state.newPushedPosts) {
-                return;
+  scrollToBottom(force = false) {
+    this.scrolling = true;
+    const chatWrapper = this.getChatWrapper();
+    if (chatWrapper) {
+      const notAtBottom = !force && this.atBottom();
+      let fewMessages = false;
+      if (app.current.matches?.(ChatPage)) {
+        const wrapper = this.wrapperEl || document.querySelector('.ChatViewport .wrapper');
+        fewMessages = wrapper && wrapper.scrollHeight + 200 < document.documentElement.clientHeight;
+      }
+      if (notAtBottom || fewMessages) return;
+
+      const time = this.pixelsFromBottom() < 80 ? 0 : 250;
+
+      const jq = window.$ && window.$(chatWrapper);
+      if (jq && jq.stop && jq.animate) {
+        jq
+          .stop()
+          .animate({ scrollTop: chatWrapper.scrollHeight }, time, 'swing', () => {
+            if (this.state) {
+              this.state.scroll.autoScroll = false;
             }
-            this.scrollAfterUpdate = true;
-        } catch (e) {
-            console.warn('ChatViewport wrapperOnBeforeUpdate error:', e);
-        }
+            this.scrolling = false;
+          });
+      } else {
+        chatWrapper.scrollTo({ top: chatWrapper.scrollHeight, behavior: time ? 'smooth' : 'auto' });
+        if (this.state) this.state.scroll.autoScroll = false;
+        this.scrolling = false;
+      }
     }
+  }
 
-    wrapperOnUpdate(vnode) {
-        try {
-            super.onupdate(vnode);
-            let el = vnode.dom;
-            if (!el) return;
-            
-            if (this.model && this.state && this.state.scroll.autoScroll) {
-                if (this.autoScrollTimeout) clearTimeout(this.autoScrollTimeout);
-                this.autoScrollTimeout = setTimeout(this.scrollToBottom.bind(this, true), 100);
-            }
-            if (el.scrollTop <= 0) el.scrollTop = 1;
-            this.checkUnreaded();
+  reloadMessages() {
+    if (!this.state.messagesFetched) {
+      let query;
+      if (this.model.unreaded()) {
+        query = this.model.readed_at()?.toISOString() ?? new Date(0).toISOString();
+        this.state.scroll.autoScroll = false;
+      }
 
-            if (this.scrollAfterUpdate) {
-                this.scrollAfterUpdate = false;
-                this.scrollToBottom();
-            }
-        } catch (e) {
-            console.warn('ChatViewport wrapperOnUpdate error:', e);
-        }
+      app.chat.apiFetchChatMessages(this.model, query).then(() => {
+        if (this.model.unreaded()) {
+          // [CHANGED] 用 id 比较
+          const anchor = app.chat.getChatMessages(
+            (mdl) =>
+              String(mdl.chat()?.id?.() ?? '') === String(this.model?.id?.() ?? '') &&
+              mdl.created_at() > this.model.readed_at()
+          )[0];
+          this.scrollToAnchor(anchor);
+        } else this.state.scroll.autoScroll = true;
+
+        m.redraw();
+      });
+
+      this.state.messagesFetched = true;
     }
+  }
 
-    wrapperOnRemove(vnode) {
-        try {
-            super.onremove(vnode);
-            if (this.boundScrollListener && vnode.dom) {
-                vnode.dom.removeEventListener('scroll', this.boundScrollListener);
-            }
-        } catch (e) {
-            console.warn('ChatViewport wrapperOnRemove error:', e);
-        }
+  nearBottom() {
+    try {
+      return this.pixelsFromBottom() <= 500;
+    } catch {
+      return false;
     }
+  }
 
-    wrapperOnScroll(e) {
-        const el = app.current.matches(ChatPage) ? document.documentElement : this.element;
-        if (!el || !this.state) return;
-
-        this.state.scroll.oldScroll = el.scrollHeight - el.clientHeight - el.scrollTop;
-
-        this.checkUnreaded();
-
-        if (this.lastFastScrollStatus != this.isFastScrollAvailable()) {
-            this.lastFastScrollStatus = this.isFastScrollAvailable();
-            m.redraw();
-        }
-
-        let currentHeight = el.scrollHeight;
-
-        if (this.atBottom()) {
-            this.state.newPushedPosts = false;
-        }
-
-        if (this.state.scroll.autoScroll || this.state.loading || this.scrolling) return;
-
-        if (!this.state.messageEditing && el.scrollTop >= 0) {
-            if (el.scrollTop <= 500) {
-                let topMessage = app.chat.getChatMessages((model) => model.chat() == this.model)[0];
-                if (topMessage && topMessage != this.model.first_message()) {
-                    app.chat.apiFetchChatMessages(this.model, topMessage.created_at().toISOString());
-                }
-            } else if (el.scrollTop + el.offsetHeight >= currentHeight - 500) {
-                let bottomMessage = app.chat.getChatMessages((model) => model.chat() == this.model).slice(-1)[0];
-                if (bottomMessage && bottomMessage != this.model.last_message()) {
-                    app.chat.apiFetchChatMessages(this.model, bottomMessage.created_at().toISOString());
-                }
-            }
-        }
+  atBottom() {
+    try {
+      return this.pixelsFromBottom() <= 5;
+    } catch {
+      return false;
     }
+  }
 
-    checkUnreaded() {
-        let wrapper = this.getChatWrapper();
-        if (wrapper && this.model && this.model.unreaded() && app.chat.chatIsShown()) {
-            let list = app.chat.getChatMessages((mdl) => mdl.chat() == this.model && mdl.created_at() >= this.model.readed_at() && !mdl.isReaded);
-
-            for (const message of list) {
-                let msg = document.querySelector(`.message-wrapper[data-id="${message.id()}"]`);
-                if (msg && wrapper.scrollTop + wrapper.offsetHeight >= msg.offsetTop) {
-                    message.isReaded = true;
-
-                    if (this.state.scroll.autoScroll && app.chat.getCurrentChat() == this.model) {
-                        app.chat.apiReadChat(this.model, new Date());
-                        this.model.pushAttributes({ unreaded: 0 });
-                    } else {
-                        app.chat.apiReadChat(this.model, message);
-                        this.model.pushAttributes({ unreaded: this.model.unreaded() - 1 });
-                    }
-
-                    m.redraw();
-                }
-            }
-        }
+  pixelsFromBottom() {
+    const element = this.getChatWrapper();
+    if (
+      !element ||
+      element.scrollHeight === undefined ||
+      element.scrollTop === undefined ||
+      element.clientHeight === undefined
+    ) {
+      return 0;
     }
-
-    scrollToAnchor(anchor) {
-        let element;
-        if (anchor instanceof Message) element = $(`.message-wrapper[data-id="${anchor.id()}"`)[0];
-        else element = anchor;
-
-        let chatWrapper = this.getChatWrapper();
-        if (chatWrapper && element)
-            $(chatWrapper)
-                .stop()
-                .animate({ scrollTop: element.offsetTop - element.offsetHeight }, 500);
-        else setTimeout(scroll, 100);
-    }
-
-    scrollToBottom(force = false) {
-        this.scrolling = true;
-        let chatWrapper = this.getChatWrapper();
-        if (chatWrapper) {
-            const notAtBottom = !force && this.atBottom();
-            let fewMessages = false;
-            if (app.current.matches(ChatPage)) {
-                const wrapper = document.querySelector('.ChatViewport .wrapper');
-                fewMessages = wrapper && wrapper.scrollHeight + 200 < document.documentElement.clientHeight;
-            }
-            if (notAtBottom || fewMessages) return;
-
-            const time = this.pixelsFromBottom() < 80 ? 0 : 250;
-
-            $(chatWrapper)
-                .stop()
-                .animate({ scrollTop: chatWrapper.scrollHeight }, time, 'swing', () => {
-                    if (this.state) {
-                        this.state.scroll.autoScroll = false;
-                    }
-                    this.scrolling = false;
-                });
-        }
-    }
-
-    reloadMessages() {
-        if (!this.state.messagesFetched) {
-            let query;
-            if (this.model.unreaded()) {
-                query = this.model.readed_at()?.toISOString() ?? new Date(0).toISOString();
-                this.state.scroll.autoScroll = false;
-            }
-
-            app.chat.apiFetchChatMessages(this.model, query).then(() => {
-                if (this.model.unreaded()) {
-                    let anchor = app.chat.getChatMessages((mdl) => mdl.chat() == this.model && mdl.created_at() > this.model.readed_at())[0];
-                    this.scrollToAnchor(anchor);
-                } else this.state.scroll.autoScroll = true;
-
-                m.redraw();
-            });
-
-            this.state.messagesFetched = true;
-        }
-    }
-
-    nearBottom() {
-        try {
-            return this.pixelsFromBottom() <= 500;
-        } catch (e) {
-            return false;
-        }
-    }
-
-    atBottom() {
-        try {
-            return this.pixelsFromBottom() <= 5;
-        } catch (e) {
-            return false;
-        }
-    }
-
-    pixelsFromBottom() {
-        const element = app.current.matches(ChatPage) ? document.documentElement : this.element;
-        if (!element || element.scrollHeight === undefined || element.scrollTop === undefined || element.clientHeight === undefined) {
-            return 0;
-        }
-        return Math.abs(element.scrollHeight - element.scrollTop - element.clientHeight);
-    }
+    return Math.abs(element.scrollHeight - element.scrollTop - element.clientHeight);
+  }
 }
