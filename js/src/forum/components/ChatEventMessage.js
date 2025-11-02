@@ -1,6 +1,7 @@
 // js/src/forum/components/ChatEventMessage.js
 // [CHANGED] Import paths -> flarum/common/*
 
+import app from 'flarum/forum/app';
 import ChatMessage from './ChatMessage';
 import Link from 'flarum/common/components/Link';             // [CHANGED]
 import extractText from 'flarum/common/utils/extractText';    // [CHANGED]
