@@ -727,7 +727,7 @@ export default class ChatState {
       }
     }
 
-    this.chatmessages = this.chatmessages.filter((m) => m !== model);
+    this.chatmessages = this.chatmessages.filter((m) => m?.id?.() !== model?.id?.());
     if (sync) model.delete();
 
     m.redraw();
