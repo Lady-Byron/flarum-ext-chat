@@ -640,6 +640,31 @@ export default class ChatState {
       });
   }
 
+  // ChatMessage -> ChatState 的管理动作路由（保留编辑/重发在 ViewportState）
+onChatMessageClicked(eventName, model) {
+  switch (eventName) {
+    case 'dropdownHide':
+      // 软删除（可恢复）
+      this.hideChatMessage(model, true);
+      break;
+
+    case 'dropdownRestore':
+      // 还原软删除
+      this.restoreChatMessage(model, true);
+      break;
+
+    case 'dropdownDelete':
+      // 永久删除
+      this.deleteChatMessage(model, true);
+      break;
+
+    // 其余事件（编辑开始/重发/插入提及）由 ViewportState 处理
+    default:
+      break;
+  }
+}
+
+
   /* --------------------------------
    *  发送 / 编辑 / 隐藏 / 删除
    * -------------------------------- */
