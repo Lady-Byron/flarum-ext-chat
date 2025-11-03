@@ -9,7 +9,7 @@ import Message from './models/Message';
 import User from 'flarum/common/models/User';
 import Model from 'flarum/common/Model';
 import ChatState from './states/ChatState';
-// import addChatPage from './addChatPage'; // 若未来需要独立路由入口可开启
+import addChatPage from './addChatPage'; // 若未来需要独立路由入口可开启
 
 // [CHANGED] 幂等创建容器（避免重复挂载）
 function ensureChatRoot() {
