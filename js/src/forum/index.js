@@ -9,9 +9,23 @@ import Message from './models/Message';
 import User from 'flarum/common/models/User';
 import Model from 'flarum/common/Model';
 import ChatState from './states/ChatState';
-import addChatPage from './addChatPage'; // 独立路由入口
+import addChatPage from './addChatPage'; // 保留以添加移动端导航入口
+import ChatPage from './components/ChatPage'; // [NEW] 用于无条件注册路由
 
-// [ENH] 幂等创建容器（避免重复挂载）
+// [NEW][SAFE] 独立的“只注册路由”的初始化器：不依赖 app.forum，不受权限影响
+app.initializers.add('xelson-chat:routes', () => {
+  try {
+    // idempotent：重复赋值无副作用
+    app.routes.chat = { path: '/chat', component: ChatPage };
+    // 可选：开发期自检标记
+    // console.info('[xelson-chat] route registered -> /chat');
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.warn('[xelson-chat] route register failed:', e);
+  }
+});
+
+// [CHANGED] 幂等创建容器（避免重复挂载）
 function ensureChatRoot() {
   let el = document.getElementById('chat');
   if (!el) {
@@ -22,11 +36,13 @@ function ensureChatRoot() {
   return el;
 }
 
-app.initializers.add('xelson-chat', () => {
-  if (!app.forum) return;
-
-  // [NOTE] 不要在这里用 app.forum.attribute('xelson-chat.permissions.enabled') 直接短路！
-  // 该属性并不会被 core 自动注入；是否可用交给 ChatState/组件内部自行判断。
+// [CHANGED] 业务初始化与浮窗挂载，单独一个 initializer；去掉“if (!app.forum) return”
+app.initializers.add('xelson-chat:boot', () => {
+  // [HARDEN] 极端情况下 app.forum 尚未就绪，延一帧再跑；保证不丢执行
+  if (!app.forum) {
+    requestAnimationFrame(() => app.initializers.get('xelson-chat:boot')?.());
+    return;
+  }
 
   // [CHANGED] 屏蔽“Pusher or Websockets”唯一那条提示，其它保持
   const rawShow = app.alerts.show.bind(app.alerts);
@@ -39,12 +55,21 @@ app.initializers.add('xelson-chat', () => {
     return rawShow(attrs, content, ...rest);
   };
 
-  // [FIX] 注册模型
+  // [CHANGED] 注册模型
   app.store.models.chats = Chat;
   app.store.models.chatmessages = Message;
 
   // ------- User.chat_pivot(chatId) 读取器 -------
   function pivot(name, id, attr, transform) {
+    pivot.hasOne = function (name, id, attr) {
+      return function () {
+        const rel =
+          this.data.attributes[name] &&
+          this.data.attributes[name][id] &&
+          this.data.attributes[name][id][attr];
+        if (rel) return app.store.getById(rel.data.type, rel.data.id);
+      };
+    };
     return function () {
       const val =
         this.data.attributes[name] &&
@@ -57,34 +82,35 @@ app.initializers.add('xelson-chat', () => {
   Object.assign(User.prototype, {
     chat_pivot(chat_id) {
       return {
-        role:       pivot('chat_pivot', chat_id, 'role').bind(this),
+        role: pivot('chat_pivot', chat_id, 'role').bind(this),
         removed_by: pivot('chat_pivot', chat_id, 'removed_by').bind(this),
-        readed_at:  pivot('chat_pivot', chat_id, 'readed_at',  Model.transformDate).bind(this),
+        readed_at: pivot('chat_pivot', chat_id, 'readed_at', Model.transformDate).bind(this),
         removed_at: pivot('chat_pivot', chat_id, 'removed_at', Model.transformDate).bind(this),
-        joined_at:  pivot('chat_pivot', chat_id, 'joined_at',  Model.transformDate).bind(this),
+        joined_at: pivot('chat_pivot', chat_id, 'joined_at', Model.transformDate).bind(this),
       };
     },
   });
 
-  // [FIX] 扩展 ForumApplication 挂载周期（不再早退）
+  // [CHANGED] 扩展 ForumApplication 挂载周期（更稳妥）
   extend(ForumApplication.prototype, 'mount', function () {
+    // 路由已在 `xelson-chat:routes` 注册，不受下列权限影响
+    // 这里仅控制“是否浮窗挂载”
+    if (!app.forum.attribute('xelson-chat.permissions.enabled')) return;
+
+    // 防止重复 mount
+    if (app.__neonMounted) return;
+    app.__neonMounted = true;
+
     const root = ensureChatRoot();
 
-    // [CHANGED] 始终创建 ChatState；内部再根据权限控制 UI/行为
-    if (!app.chat) app.chat = new ChatState();
+    app.chat = new ChatState();
+    m.mount(root, ChatFrame);
 
-    // [HARDEN] 幂等挂载（Flarum 正常只 mount 一次，这里加保护）
-    if (!root.__mounted) {
-      m.mount(root, ChatFrame);
-      root.__mounted = true;
-    }
-
-    // 可通知授权
     if ('Notification' in window && app.chat.getFrameState('notify')) {
       Notification.requestPermission();
     }
 
-    // [HARDEN] 幂等绑定 Realtime 事件，统一路由给 ChatState
+    // [CHANGED] 幂等绑定 Realtime 事件，统一路由给 ChatState
     if (app.realtime && typeof app.realtime.on === 'function' && !app.__neonRealtimeBound) {
       app.__neonRealtimeBound = true; // 防重复绑定
       app.realtime.on('neonchat.events', (payload) => {
@@ -99,11 +125,10 @@ app.initializers.add('xelson-chat', () => {
       });
     }
 
-    // 拉取会话列表（内部会做权限判断/异常处理）
     app.chat.apiFetchChats();
   });
 
-  // 始终注册路由（无需依赖权限属性）
+  // 保留“移动端 IndexPage 里的入口按钮”
   addChatPage();
 });
 
