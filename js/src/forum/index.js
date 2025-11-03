@@ -104,5 +104,6 @@ app.initializers.add('xelson-chat', () => {
   });
 
   // 可选：addChatPage(); // 若需独立路由入口再启用
+  addChatPage();
 });
 
