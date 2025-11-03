@@ -3,19 +3,28 @@
     "target": "es2018",
     "module": "esnext",
     "moduleResolution": "node",
-    "jsx": "react",
+
+    "jsx": "preserve",
     "jsxFactory": "m",
     "jsxFragmentFactory": "m.fragment",
+
+    "allowJs": true,
+    "checkJs": false,
     "strict": false,
     "esModuleInterop": true,
     "skipLibCheck": true,
-    "noEmit": false,
-    "sourceMap": true
+
+    "noEmit": true,
+    "sourceMap": true,
+    "lib": ["es2018", "dom"]
   },
   "include": [
-    "forum.js",
-    "admin.js",
     "src/**/*.js",
-    "src/**/*.tsx"
-  ]
+    "src/**/*.jsx",
+    "src/**/*.ts",
+    "src/**/*.tsx",
+    "admin.js",
+    "forum.js"
+  ],
+  "exclude": ["dist", "node_modules"]
 }
