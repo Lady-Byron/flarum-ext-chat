@@ -1,11 +1,13 @@
 // js/src/forum/index.js
-// [FIX] 根因是挂载时机：mount 可能在我们打补丁前已执行完，导致 #chat 从未创建/挂载
-// [CHANGED] 顶层幂等创建 #chat；initializer 内“立即挂载一次” + 挂 mount 钩子双保险
-// [KEEP] 模型注册/Realtime 绑定/权限由 ChatState & 组件内部处理，不在这里早退
+// [FIX] 解决挂载时机：谁创建 #chat，谁负责触发一次挂载（queueMicrotask/setTimeout）
+// [ENH] 显式导入 mithril，避免对全局 m 的隐式依赖
+// [KEEP] 模型注册 / Realtime 绑定 / 路由入口维持不变（幂等）
+// [NOTE] 如后端实际字段是 read_at，这里额外提供 read_at() 作为别名
 
 import app from 'flarum/forum/app';
 import { extend } from 'flarum/common/extend';
 import ForumApplication from 'flarum/forum/ForumApplication';
+import m from 'mithril';
 
 import ChatFrame from './components/ChatFrame';
 
@@ -16,7 +18,31 @@ import Model from 'flarum/common/Model';
 import ChatState from './states/ChatState';
 import addChatPage from './addChatPage'; // 独立路由入口（方案 B）
 
-// ---------- 顶层：幂等创建 #chat（不依赖任何钩子） ----------
+/** ---------- 辅助：实际挂载 ChatFrame（幂等） ---------- */
+function mountFloatingChat() {
+  const root = document.getElementById('chat');
+  if (!root || root.__mounted) return;
+
+  // 始终准备 ChatState；是否显示由组件/权限自行判断
+  if (!app.chat) app.chat = new ChatState();
+
+  m.mount(root, ChatFrame);
+  root.__mounted = true;
+
+  // 可选：请求通知授权（仍建议在用户交互时再请求以提高通过率）
+  try {
+    if ('Notification' in window && app.chat.getFrameState && app.chat.getFrameState('notify')) {
+      Notification.requestPermission?.();
+    }
+  } catch (_) {}
+
+  // 拉取会话列表（内部自带异常与权限兜底）
+  try {
+    app.chat.apiFetchChats?.();
+  } catch (_) {}
+}
+
+/** ---------- 顶层：幂等创建 #chat（不依赖任何 Flarum 钩子） ---------- */
 function ensureChatRoot() {
   const append = () => {
     let el = document.getElementById('chat');
@@ -25,47 +51,32 @@ function ensureChatRoot() {
       el.id = 'chat';
       document.body.append(el);
     }
+    // 关键：节点准备好后，安排一次异步挂载（如果已挂载会被 __mounted 拦住）
+    if (typeof queueMicrotask === 'function') queueMicrotask(mountFloatingChat);
+    else setTimeout(mountFloatingChat, 0);
     return el;
   };
 
   if (document.readyState === 'loading') {
-    // 文档未就绪时，延迟到 DOMContentLoaded
+    // 文档未就绪，等 DOMContentLoaded 再创建并触发挂载
     document.addEventListener('DOMContentLoaded', append, { once: true });
     return null;
   }
   return append();
 }
 
-// 先尽力创建（若此刻 body 未就绪，DOMContentLoaded 会再补一次）
+// 顶层先尽力创建（若 body 未就绪，DOMContentLoaded 会补一次且触发挂载）
 ensureChatRoot();
 
-// ---------- 辅助：实际挂载 ChatFrame（幂等） ----------
-function mountFloatingChat() {
-  const root = document.getElementById('chat');
-  if (!root || root.__mounted) return;
-
-  // 始终准备好 ChatState；权限/显示由内部自己判定
-  if (!app.chat) app.chat = new ChatState();
-
-  m.mount(root, ChatFrame);
-  root.__mounted = true;
-
-  // 可选：通知授权
-  if ('Notification' in window && app.chat.getFrameState('notify')) {
-    Notification.requestPermission();
-  }
-
-  // 拉取会话列表（内部做权限/异常兜底）
-  app.chat.apiFetchChats();
-}
-
-// ---------- 核心初始化 ----------
+/** ---------- 核心初始化 ---------- */
 app.initializers.add('xelson-chat:boot', () => {
-  // [KEEP] 屏蔽“Pusher or Websockets”那条提示，其它保持
+  // 屏蔽 “Pusher or Websockets” 提示（尽量不影响其它 alert）
   const rawShow = app.alerts.show.bind(app.alerts);
   app.alerts.show = (attrs, content, ...rest) => {
-    const msg = typeof content === 'string' ? content : (content && content.toString ? content.toString() : '');
-    if (msg && msg.includes('Pusher or Websockets')) return;
+    const text = (typeof content === 'string')
+      ? content
+      : (content && content.toString ? content.toString() : '');
+    if (text && text.includes('Pusher or Websockets')) return;
     return rawShow(attrs, content, ...rest);
   };
 
@@ -73,13 +84,11 @@ app.initializers.add('xelson-chat:boot', () => {
   app.store.models.chats = Chat;
   app.store.models.chatmessages = Message;
 
-  // ------- User.chat_pivot(chatId) 读取器（保持你现在实现） -------
+  // User.chat_pivot(chatId) 读取器
   function pivot(name, id, attr, transform) {
     return function () {
-      const val =
-        this.data.attributes[name] &&
-        this.data.attributes[name][id] &&
-        this.data.attributes[name][id][attr];
+      const bucket = this.data?.attributes?.[name];
+      const val = bucket && bucket[id] && bucket[id][attr];
       return transform ? transform(val) : val;
     };
   }
@@ -89,17 +98,19 @@ app.initializers.add('xelson-chat:boot', () => {
       return {
         role:       pivot('chat_pivot', chat_id, 'role').bind(this),
         removed_by: pivot('chat_pivot', chat_id, 'removed_by').bind(this),
-        readed_at:  pivot('chat_pivot', chat_id, 'readed_at',  Model.transformDate).bind(this),
+        // 如果后端是 read_at，这里也提供同名方法（作为兼容）
+        readed_at:  pivot('chat_pivot', chat_id, 'readed_at', Model.transformDate).bind(this),
+        read_at:    pivot('chat_pivot', chat_id, 'read_at',   Model.transformDate).bind(this),
         removed_at: pivot('chat_pivot', chat_id, 'removed_at', Model.transformDate).bind(this),
         joined_at:  pivot('chat_pivot', chat_id, 'joined_at',  Model.transformDate).bind(this),
       };
     },
   });
 
-  // —— 立即尝试挂载一次（避免错过 ForumApplication.mount 时机）——
+  // 立即尝试挂载一次（避免错过 ForumApplication.mount 时机）
   mountFloatingChat();
 
-  // —— 也补挂到 mount（正常情况下只会触发一次；这里是双保险）——
+  // 补挂到 mount（正常只触发一次，作为双保险）
   extend(ForumApplication.prototype, 'mount', function () {
     mountFloatingChat();
   });
