@@ -10,25 +10,6 @@
     ],
     "type": "flarum-extension",
     "license": "MIT",
-    "support": {
-        "issues": "https://github.com/Xelson/flarum-ext-chat/issues",
-        "source": "https://github.com/Xelson/flarum-ext-chat",
-        "forum": "https://discuss.flarum.org/d/25361"
-    },
-    "authors": [
-        {
-            "name": "Juan"
-        },
-        {
-            "name": "Guillem Pascual",
-            "email": "blipi.tube@gmail.com",
-            "homepage": "http://pushedx.net"
-        },
-        {
-            "name": "Xelson",
-            "homepage": "https://neonsky.ru"
-        }
-    ],
     "require": {
         "flarum/core": "^1.0",
         "flarum/markdown": "^1.0"
@@ -38,10 +19,9 @@
             "title": "Neon Chat",
             "category": "feature",
             "icon": {
-                "image": "icon.svg",
+                "name": "fas fa-comments",
                 "backgroundColor": "#ffaad4",
-                "backgroundSize": "cover",
-                "backgroundPosition": "center"
+                "color": "#fff"
             }
         }
     },
