@@ -1,17 +1,19 @@
 // js/src/forum/states/ChatState.js
 //
-// === 改动汇总 ===
+// === 改动汇总（保留你现有改动 A–J）===
 // [CHANGED] A. handleSocketEvent：所有“是否本人”的判断一律改为按 id() 比较（更稳），不再做对象引用比较
 // [CHANGED] B. chat.edit -> roles_updated_for：翻译占位改为传纯字符串，不再把 <b>{name}</b> 作为占位值传入 translator
 // [CHANGED] C. setRelationship：从模型实例/文档对象读取 type；移除无用变量与写死 'chatmessages' 的风险（仍保留兜底）
 // [CHANGED] D. getUnreadedTotal：用 Number() + Math.max()，避免按位或导致的 32 位溢出与负数
 // [CHANGED] E. pushOne：若已是 Model 实例则直接返回；否则按 JSON:API 文档推入（小幅稳健性增强）
-// --- 本次新增 ---
 // [CHANGED] F. throttle 正确用法：改为 throttle(fn, wait) 并先创建再执行（修复 1.8 下的运行时报错）
 // [CHANGED] G. PM 会话匹配一律按 user.id 比较，去除对象引用比较
 // [CHANGED] H. addChat 去重：避免同一 chat 被重复推入 this.chats
 // [CHANGED] I. loadingQueries 的键统一字符串化（含数组 query），避免键碰撞
 // [CHANGED] J. deleteChat 改为按 id 过滤，提升幂等性
+//
+// === 本次新增（关键修复）===
+// [ADDED]  apiFetchChats：真正拉取会话列表；无论成功失败都关闭 this.chatsLoading，避免 UI 无限转圈；按 id 去重并恢复上次选中
 
 import app from 'flarum/forum/app';
 import Model from 'flarum/common/Model';
@@ -21,18 +23,6 @@ import { throttle } from 'flarum/common/utils/throttleDebounce';
 
 import * as resources from '../resources';
 import ViewportState from './ViewportState';
-
-// 参考：事件负载契约
-// payload = {
-//   event: { id: 'message.post'|'message.edit'|'message.delete'|'chat.create'|'chat.edit'|'chat.delete', chat_id },
-//   response: {
-//     message?: <JSON:API resource or document>,
-//     chat?: <JSON:API resource or document>,
-//     actions?: { msg?: string, hide?: boolean, invoker?: number },
-//     eventmsg_range?: number[],
-//     roles_updated_for?: number[]
-//   }
-// }
 
 const refAudio = new Audio();
 refAudio.src = resources.base64AudioNotificationRef;
@@ -80,7 +70,7 @@ export default class ChatState {
       },
     };
 
-    /** @type {Record<number, ViewportState>} */
+    /** @type {Record<number|string, ViewportState>} */
     this.viewportStates = {};
   }
 
@@ -244,8 +234,7 @@ export default class ChatState {
       }
 
       case 'chat.delete': {
-        // 这里按是否本人触发可以省略，但保留与上面一致的语义
-        this.deleteChat(chat); // [CHANGED] J：deleteChat 内部按 id 过滤，幂等
+        this.deleteChat(chat); // [CHANGED] J
         m.redraw();
         break;
       }
@@ -316,7 +305,7 @@ export default class ChatState {
 
   deleteChat(model) {
     const id = model?.id?.();
-    this.chats = this.chats.filter((m) => m?.id?.() !== id); // [CHANGED] J：按 id 过滤
+    this.chats = this.chats.filter((m) => m?.id?.() !== id); // [CHANGED] J
     if (this.getCurrentChat()?.id?.() === id) this.setCurrentChat(null);
   }
 
@@ -590,7 +579,56 @@ export default class ChatState {
   }
 
   /* --------------------------------
-   *  阅读回执 / 拉取
+   *  拉取会话列表（关键修复）
+   * -------------------------------- */
+  apiFetchChats(options = {}) {
+    // 已在加载且不是强制，就直接返回当前列表
+    if (this.chatsLoading && !options.force) {
+      return Promise.resolve(this.chats);
+    }
+
+    this.chatsLoading = true;
+
+    return app.store
+      .find('chats', options.params || {})
+      .then((records) => {
+        const list = Array.isArray(records) ? records : (records ? [records] : []);
+
+        // 重建列表并按 id 去重
+        this.chats = [];
+        this.viewportStates = {};
+        const seen = new Set();
+
+        list.forEach((chat) => {
+          const id = chat?.id?.();
+          if (id == null || seen.has(id)) return;
+          seen.add(id);
+          this.addChat(chat); // 内部负责建 viewportState、命中 selectedChat 时触发 onChatChanged
+        });
+
+        // 若本地有“上次选中的会话”，但刚才没命中，则尽量恢复一次
+        const selectedId = this.getFrameState('selectedChat');
+        if (selectedId && !this.getCurrentChat()) {
+          const sel = this.chats.find((c) => String(c?.id?.()) === String(selectedId));
+          if (sel) this.onChatChanged(sel);
+        }
+
+        return this.chats;
+      })
+      .catch((e) => {
+        // eslint-disable-next-line no-console
+        console.warn('[neon-chat] apiFetchChats error:', e);
+        this.setFrameState?.('failed', true);
+        return [];
+      })
+      .finally(() => {
+        this.chatsLoading = false; // 关键：关闭 loading，避免无限转圈
+        m.redraw();
+      });
+  }
+
+  /* --------------------------------
+   *  阅读回执 / 拉取消息
    * -------------------------------- */
   apiReadChat(chat, messageOrDate) {
     if (this.readingTimeout) clearTimeout(this.readingTimeout);
@@ -640,7 +678,9 @@ export default class ChatState {
       });
   }
 
-  // ChatMessage -> ChatState 的管理动作路由（保留编辑/重发在 ViewportState）
+  /* --------------------------------
+   *  发送 / 编辑 / 隐藏 / 删除
+   * -------------------------------- */
   onChatMessageClicked(eventName, model) {
     if (!model || !app.session.user) return;
 
@@ -657,31 +697,24 @@ export default class ChatState {
 
     switch (eventName) {
       case 'dropdownHide': {
-        // 软删除（作者本人或会话管理员）
         if (canSelfDelete || isLocalModer) this.hideChatMessage(model, true);
         break;
       }
       case 'dropdownRestore': {
-        // 还原（管理员或本人）
         if (canRestore) this.restoreChatMessage(model, true);
         break;
       }
       case 'dropdownDelete': {
-        // 永久删除：需要 delete 权限，并且（会话管理员 或 已软删 或 达到阈值）
         if (perms.delete && (isLocalModer || model.deleted_by?.() || this.totalHidden() >= 3)) {
           this.deleteChatMessage(model, true);
         }
         break;
       }
       default:
-        // 其它事件（编辑开始/重发/插入提及）由 ViewportState 处理
         break;
     }
   }
 
-  /* --------------------------------
-   *  发送 / 编辑 / 隐藏 / 删除
-   * -------------------------------- */
   postChatMessage(model) {
     if (!model) return Promise.resolve();
 
