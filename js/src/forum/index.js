@@ -7,7 +7,6 @@
 import app from 'flarum/forum/app';
 import { extend } from 'flarum/common/extend';
 import ForumApplication from 'flarum/forum/ForumApplication';
-import m from 'mithril';
 
 import ChatFrame from './components/ChatFrame';
 
