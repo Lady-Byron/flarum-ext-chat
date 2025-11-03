@@ -11,7 +11,7 @@ xelson-chat:
       minimize: 最小化
       maximize: 窗口化
     chat:
-      placeholder: 请自觉遵守互联网相关的政策法规，严禁发布色情、暴力、反动的言论...
+      placeholder: 请自觉遵守论坛规则 ：）
       message:
         actions:
           hide: 隐藏
