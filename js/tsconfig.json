@@ -1,0 +1,21 @@
+{
+  "compilerOptions": {
+    "target": "es2018",
+    "module": "esnext",
+    "moduleResolution": "node",
+    "jsx": "react",
+    "jsxFactory": "m",
+    "jsxFragmentFactory": "m.fragment",
+    "strict": false,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "noEmit": false,
+    "sourceMap": true
+  },
+  "include": [
+    "forum.js",
+    "admin.js",
+    "src/**/*.ts",
+    "src/**/*.tsx"
+  ]
+}
