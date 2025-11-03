@@ -583,13 +583,10 @@ export default class ChatState {
    * -------------------------------- */
   apiFetchChats(options = {}) {
     // 已在加载且不是强制，就直接返回当前列表
-    if (this.chatsLoading && !options.force) {
-      return Promise.resolve(this.chats);
-    }
+    if (this._fetchingChats && !options.force) return this._fetchingChats;
 
     this.chatsLoading = true;
-
-    return app.store
+    this._fetchingChats = app.store
       .find('chats', options.params || {})
       .then((records) => {
         const list = Array.isArray(records) ? records : (records ? [records] : []);
@@ -623,8 +620,10 @@ export default class ChatState {
       })
       .finally(() => {
         this.chatsLoading = false; // 关键：关闭 loading，避免无限转圈
+        this._fetchingChats = null;
         m.redraw();
       });
+    return this._fetchingChats;
   }
 
   /* --------------------------------
