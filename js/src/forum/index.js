@@ -9,9 +9,9 @@ import Message from './models/Message';
 import User from 'flarum/common/models/User';
 import Model from 'flarum/common/Model';
 import ChatState from './states/ChatState';
-import addChatPage from './addChatPage'; // 若未来需要独立路由入口可开启
+import addChatPage from './addChatPage'; // 独立路由入口
 
-// [CHANGED] 幂等创建容器（避免重复挂载）
+// [ENH] 幂等创建容器（避免重复挂载）
 function ensureChatRoot() {
   let el = document.getElementById('chat');
   if (!el) {
@@ -25,6 +25,9 @@ function ensureChatRoot() {
 app.initializers.add('xelson-chat', () => {
   if (!app.forum) return;
 
+  // [NOTE] 不要在这里用 app.forum.attribute('xelson-chat.permissions.enabled') 直接短路！
+  // 该属性并不会被 core 自动注入；是否可用交给 ChatState/组件内部自行判断。
+
   // [CHANGED] 屏蔽“Pusher or Websockets”唯一那条提示，其它保持
   const rawShow = app.alerts.show.bind(app.alerts);
   app.alerts.show = (attrs, content, ...rest) => {
@@ -36,21 +39,12 @@ app.initializers.add('xelson-chat', () => {
     return rawShow(attrs, content, ...rest);
   };
 
-  // [CHANGED] 注册模型
+  // [FIX] 注册模型
   app.store.models.chats = Chat;
   app.store.models.chatmessages = Message;
 
   // ------- User.chat_pivot(chatId) 读取器 -------
   function pivot(name, id, attr, transform) {
-    pivot.hasOne = function (name, id, attr) {
-      return function () {
-        const rel =
-          this.data.attributes[name] &&
-          this.data.attributes[name][id] &&
-          this.data.attributes[name][id][attr];
-        if (rel) return app.store.getById(rel.data.type, rel.data.id);
-      };
-    };
     return function () {
       const val =
         this.data.attributes[name] &&
@@ -63,29 +57,34 @@ app.initializers.add('xelson-chat', () => {
   Object.assign(User.prototype, {
     chat_pivot(chat_id) {
       return {
-        role: pivot('chat_pivot', chat_id, 'role').bind(this),
+        role:       pivot('chat_pivot', chat_id, 'role').bind(this),
         removed_by: pivot('chat_pivot', chat_id, 'removed_by').bind(this),
-        readed_at: pivot('chat_pivot', chat_id, 'readed_at', Model.transformDate).bind(this),
+        readed_at:  pivot('chat_pivot', chat_id, 'readed_at',  Model.transformDate).bind(this),
         removed_at: pivot('chat_pivot', chat_id, 'removed_at', Model.transformDate).bind(this),
-        joined_at: pivot('chat_pivot', chat_id, 'joined_at', Model.transformDate).bind(this),
+        joined_at:  pivot('chat_pivot', chat_id, 'joined_at',  Model.transformDate).bind(this),
       };
     },
   });
 
-  // [CHANGED] 扩展 ForumApplication 挂载周期（更稳妥）
+  // [FIX] 扩展 ForumApplication 挂载周期（不再早退）
   extend(ForumApplication.prototype, 'mount', function () {
-    if (!app.forum.attribute('xelson-chat.permissions.enabled')) return;
-
     const root = ensureChatRoot();
 
-    app.chat = new ChatState();
-    m.mount(root, ChatFrame);
+    // [CHANGED] 始终创建 ChatState；内部再根据权限控制 UI/行为
+    if (!app.chat) app.chat = new ChatState();
 
+    // [HARDEN] 幂等挂载（Flarum 正常只 mount 一次，这里加保护）
+    if (!root.__mounted) {
+      m.mount(root, ChatFrame);
+      root.__mounted = true;
+    }
+
+    // 可通知授权
     if ('Notification' in window && app.chat.getFrameState('notify')) {
       Notification.requestPermission();
     }
 
-    // [CHANGED] 幂等绑定 Realtime 事件，统一路由给 ChatState
+    // [HARDEN] 幂等绑定 Realtime 事件，统一路由给 ChatState
     if (app.realtime && typeof app.realtime.on === 'function' && !app.__neonRealtimeBound) {
       app.__neonRealtimeBound = true; // 防重复绑定
       app.realtime.on('neonchat.events', (payload) => {
@@ -100,10 +99,11 @@ app.initializers.add('xelson-chat', () => {
       });
     }
 
+    // 拉取会话列表（内部会做权限判断/异常处理）
     app.chat.apiFetchChats();
   });
 
-  // 可选：addChatPage(); // 若需独立路由入口再启用
+  // 始终注册路由（无需依赖权限属性）
   addChatPage();
 });
 
