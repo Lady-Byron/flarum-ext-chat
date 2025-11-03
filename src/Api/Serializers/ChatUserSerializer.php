@@ -19,7 +19,7 @@ class ChatUserSerializer extends ChatSerializer
      * @param object|array $model
      * @return array
      */
-    protected function getDefaultAttributes($chat)
+    protected function getDefaultAttributes($chat): array
     {
         $attributes = $chat->getAttributes();
 		if($chat->created_at) $attributes['created_at'] = $this->formatDate($chat->created_at);
