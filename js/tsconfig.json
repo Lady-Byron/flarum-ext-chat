@@ -15,7 +15,7 @@
   "include": [
     "forum.js",
     "admin.js",
-    "src/**/*.ts",
+    "src/**/*.js",
     "src/**/*.tsx"
   ]
 }
