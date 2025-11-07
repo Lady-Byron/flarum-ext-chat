@@ -108,9 +108,7 @@ export default class ChatCreateModal extends ChatModal {
     const color = (this.getInput().color() || '').trim();
 
     const selected = this.getSelectedUsers();
-    const identifiers = [...selected, app.session.user]
-      .map((u) => (u ? Model.getIdentifier(u) : null))
-      .filter(Boolean);
+    const identifiers = [...selected, app.session.user].filter(Boolean);
 
     app.store
       .createRecord('chats')
@@ -119,7 +117,7 @@ export default class ChatCreateModal extends ChatModal {
         isChannel: this.isChannel,
         icon,
         color,
-        relationships: { users: identifiers }, // 发送 identifiers，避免把模型对象直接塞进 relationships
+        relationships: { users: userModels }, // 发送 identifiers，避免把模型对象直接塞进 relationships
       })
       .then((model) => {
         app.chat.addChat(model);
