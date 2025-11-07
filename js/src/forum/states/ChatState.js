@@ -451,55 +451,43 @@ export default class ChatState {
           v.style.borderRadius = '8px';
         });
 
-        // 处理音频直链
-        this.handleAudioEmbeds(el, content);
-      }, 10);
-    } catch (e) {
-      // eslint-disable-next-line no-console
-      console.warn('TextFormatter preview error:', e);
-      el.innerHTML = content;
-      setTimeout(() => this.handleAudioEmbeds(el, content), 10);
-    }
-
-    // 提及修复（deleted mention -> link）
-    if (window.$) {
-      window
-        .$(el)
-        .find('.UserMention.UserMention--deleted')
-        .each(function () {
-          const username = this.innerText?.substring(1);
+      // 处理音频直链
+      this.handleAudioEmbeds(el, content);
+   
+      // 提及修复（deleted mention -> 原生 <a>；避免在 Mithril 子树内再次 m.render）
+      if (window.$) {
+        window.$(el).find('.UserMention.UserMention--deleted').each(function () {
+          const username = this.textContent?.slice(1);
           if (!username) return;
-
           const user = app.store.getBy('users', 'username', username);
-          if (this && user) {
-            this.classList.remove('UserMention--deleted');
-            try {
-              m.render(this, <Link href={app.route.user(user)}>{this.innerText}</Link>);
-            } catch (e) {
-              // eslint-disable-next-line no-console
-              console.warn('UserMention render error:', e);
-            }
-          }
-        });
-    }
+          if (!user) return;
 
-    // 安全加载 message 内脚本（按 url 去重，不重复注入）
-    const self = this;
-    // ✅ 正确用法：throttle(延时, 回调)，返回函数，再立即调用一次
-    throttle(100, () => {
-      if (!window.$) return;
-      window.$('.NeonChatFrame script').each(function () {
-        self.executedScripts = self.executedScripts || {};
-        const scriptURL = window.$(this).attr('src');
-        if (scriptURL && !self.executedScripts[scriptURL]) {
-          const s = document.createElement('script');
-          s.src = scriptURL;
-          document.head.appendChild(s);
-          self.executedScripts[scriptURL] = true;
+          const a = document.createElement('a');
+          a.className = 'UserMention';
+          a.href = app.route.user(user);
+          a.textContent = '@' + (user.username?.() || username);
+          if (this.getAttribute('title')) a.setAttribute('title', this.getAttribute('title'));
+          this.replaceWith(a);
+        });
+      }
+
+      // 安全加载 message 内脚本（按 url 去重，不重复注入）
+      const self = this;
+      // ✅ 正确用法：throttle(延时, 回调)，返回函数，再立即调用一次
+      throttle(100, () => {
+        if (!window.$) return;
+        window.$('.NeonChatFrame script').each(function () {
+          self.executedScripts = self.executedScripts || {};
+          const scriptURL = window.$(this).attr('src');
+          if (scriptURL && !self.executedScripts[scriptURL]) {
+            const s = document.createElement('script');
+            s.src = scriptURL;
+            document.head.appendChild(s);
+            self.executedScripts[scriptURL] = true;
         }
       });
     })();
-    }
+  }
 
   handleAudioEmbeds(element, content) {
     const audioExts = ['.mp3', '.wav', '.ogg', '.m4a', '.aac', '.flac'];
