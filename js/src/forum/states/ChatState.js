@@ -497,8 +497,8 @@ export default class ChatState {
           document.head.appendChild(s);
           self.executedScripts[scriptURL] = true;
         }
-      });
     })();
+  }
 
   handleAudioEmbeds(element, content) {
     const audioExts = ['.mp3', '.wav', '.ogg', '.m4a', '.aac', '.flac'];
