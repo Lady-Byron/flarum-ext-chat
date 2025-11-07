@@ -1,15 +1,14 @@
 // js/src/forum/components/ChatCreateModal.js
 // 修复要点：
-// - relationships.users 一律发送 identifiers（{ type, id }）
+// - relationships.users 直接传“模型实例数组”（Flarum 1.x 推荐写法）
 // - 复归既有 PM（自己曾离开）走 users.added + relationships.users
-// - 标题/图标/颜色做空值守护
-// - className 与安全外链
+// - 新建使用 type: 0(私聊)/1(频道)，而不是 isChannel
+// - 标题/图标/颜色做空值守护；所有用户数组均 filter(Boolean)
 // - 其它逻辑保持与原版一致
 
 import app from 'flarum/forum/app';
 import Button from 'flarum/common/components/Button';
 import classList from 'flarum/common/utils/classList';
-import Model from 'flarum/common/Model';
 
 import ChatModal from './ChatModal';
 
@@ -24,9 +23,12 @@ export default class ChatCreateModal extends ChatModal {
   }
 
   onsubmit() {
+    // 统一取“已选用户”并清理空位
+    const selected = (this.getSelectedUsers() || []).filter(Boolean);
+
     // 单聊优先处理：如果只选择了 1 位用户
-    if (!this.isChannel && this.getSelectedUsers().length === 1) {
-      const otherUser = this.getSelectedUsers()[0];
+    if (!this.isChannel && selected.length === 1) {
+      const otherUser = selected[0];
 
       // 1) 已有活跃 PM -> 直接切换到该会话
       const existingActiveChat = app.chat.findExistingPMChat(app.session.user, otherUser);
@@ -46,14 +48,14 @@ export default class ChatCreateModal extends ChatModal {
     }
 
     // 多人或无历史 → 正常新建
-    this.createNewChat();
+    this.createNewChat(selected);
   }
 
-  // 复归既有 PM（关键修复）：在原会话上执行 users.added，并发送 relationships.users identifiers
+  // 复归既有 PM（关键修复）：在原会话上执行 users.added，并发送 relationships.users（模型实例）
   rejoinExistingChat(existingChat) {
     const me = app.session.user;
 
-    // 以“当前会话用户 + 自己”为准，构造 identifiers
+    // 以“当前会话用户 + 自己”为准
     const users = (existingChat.users() || []).slice();
     if (!users.find((u) => u && u.id && me && u.id() === me.id())) {
       users.push(me);
@@ -63,8 +65,8 @@ export default class ChatCreateModal extends ChatModal {
 
     existingChat
       .save({
-        users: { [me] },
-        relationships: { users: userModels },
+        users: { added: [me] },                    // ✅ 复归把自己加入
+        relationships: { users: userModels },      // ✅ 直接传模型实例数组
       })
       .then(() => {
         // 确保列表中存在并切换
@@ -100,23 +102,29 @@ export default class ChatCreateModal extends ChatModal {
   }
 
   // 正常新建会话/频道
-  createNewChat() {
+  createNewChat(passedSelected) {
     const title = (this.getInput().title() || '').trim();
-    const icon = (this.getInput().icon() || '').trim();
+    const icon  = (this.getInput().icon()  || '').trim();
     const color = (this.getInput().color() || '').trim();
 
-    const selected = this.getSelectedUsers();
+    // 统一取“已选用户”并清理空位（优先复用传入）
+    const selected = (passedSelected ?? this.getSelectedUsers() ?? []).filter(Boolean);
+
+    // 构造“将参与的用户”：已选 + 自己
     const userModels = [...selected, app.session.user].filter(Boolean);
+
+    // 按 Flarum 习惯使用 type: 0(私聊)/1(频道)
+    const payload = { title, type: this.isChannel ? 1 : 0, icon, color };
+
+    // 仅在“私聊/多人聊天”且确实有用户时才附加 users 关系；
+    // 频道通常由后端自动附加可见用户，避免多传
+    if (!this.isChannel && userModels.length) {
+      payload.relationships = { users: userModels }; // ✅ 直接传模型实例数组
+    }
 
     app.store
       .createRecord('chats')
-      .save({
-        title,
-        isChannel: this.isChannel,
-        icon,
-        color,
-        relationships: { users: userModels }, // 发送 identifiers，避免把模型对象直接塞进 relationships
-      })
+      .save(payload)
       .then((model) => {
         app.chat.addChat(model);
         app.chat.onChatChanged(model);
@@ -202,8 +210,9 @@ export default class ChatCreateModal extends ChatModal {
   }
 
   isCanCreateChat() {
-    if (this.getSelectedUsers().length > 1 && !(this.getInput().title() || '').length) return false;
-    if (!this.getSelectedUsers().length) return false;
+    const selected = (this.getSelectedUsers() || []).filter(Boolean);
+    if (selected.length > 1 && !(this.getInput().title() || '').length) return false;
+    if (!selected.length) return false;
     if (this.alertText()) return false;
     return true;
   }
@@ -251,4 +260,3 @@ export default class ChatCreateModal extends ChatModal {
     );
   }
 }
-
