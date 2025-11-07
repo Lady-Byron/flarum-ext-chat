@@ -20,9 +20,9 @@ export default class ChatInput extends Component {
     this.messageCharLimit = app.forum.attribute('xelson-chat.settings.charlimit') ?? 512;
 
     // 只创建一次的节流实例
-    this._saveDraftThrottled = throttle((text) => {
+    this._saveDraftThrottled = throttle(300, (text) => {
       this.state.setChatStorageValue('draft', text);
-    }, 300);
+    });
 
     this.updatePlaceholder();
   }
@@ -174,7 +174,7 @@ export default class ChatInput extends Component {
 
   inputPressEnter(e) {
     e.redraw = false;
-    if (e.keyCode == 13 && !e.shiftKey) {
+    if (e.key === 'Enter' && !e.shiftKey) {
       this.state.messageSend();
       return false;
     }
