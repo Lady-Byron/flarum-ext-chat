@@ -59,14 +59,12 @@ export default class ChatCreateModal extends ChatModal {
       users.push(me);
     }
 
-    const identifiers = users
-      .map((u) => (u ? Model.getIdentifier(u) : null))
-      .filter(Boolean);
+    const userModels = users.filter(Boolean);
 
     existingChat
       .save({
-        users: { added: [Model.getIdentifier(me)] },
-        relationships: { users: identifiers },
+        users: { [me] },
+        relationships: { users: userModels },
       })
       .then(() => {
         // 确保列表中存在并切换
@@ -108,7 +106,7 @@ export default class ChatCreateModal extends ChatModal {
     const color = (this.getInput().color() || '').trim();
 
     const selected = this.getSelectedUsers();
-    const identifiers = [...selected, app.session.user].filter(Boolean);
+    const userModels = [...selected, app.session.user].filter(Boolean);
 
     app.store
       .createRecord('chats')
