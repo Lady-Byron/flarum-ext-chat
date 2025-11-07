@@ -1,24 +1,24 @@
 // js/src/forum/states/ChatState.js
 //
 // === 改动汇总（保留你现有改动 A–J）===
-// [CHANGED] A. handleSocketEvent：所有“是否本人”的判断一律改为按 id() 比较（更稳），不再做对象引用比较
-// [CHANGED] B. chat.edit -> roles_updated_for：翻译占位改为传纯字符串，不再把 <b>{name}</b> 作为占位值传入 translator
-// [CHANGED] C. setRelationship：从模型实例/文档对象读取 type；移除无用变量与写死 'chatmessages' 的风险（仍保留兜底）
-// [CHANGED] D. getUnreadedTotal：用 Number() + Math.max()，避免按位或导致的 32 位溢出与负数
-// [CHANGED] E. pushOne：若已是 Model 实例则直接返回；否则按 JSON:API 文档推入（小幅稳健性增强）
-// [CHANGED] F. throttle 正确用法：改为 throttle(fn, wait) 并先创建再执行（修复 1.8 下的运行时报错）
-// [CHANGED] G. PM 会话匹配一律按 user.id 比较，去除对象引用比较
-// [CHANGED] H. addChat 去重：避免同一 chat 被重复推入 this.chats
-// [CHANGED] I. loadingQueries 的键统一字符串化（含数组 query），避免键碰撞
-// [CHANGED] J. deleteChat 改为按 id 过滤，提升幂等性
+// [CHANGED] A. handleSocketEvent：所有“是否本人”的判断一律按 id() 比较，更稳
+// [CHANGED] B. chat.edit -> roles_updated_for：翻译占位仅传字符串，避免 [object Object]
+// [CHANGED] C. setRelationship：从模型/文档读取 type；兜底 'chatmessages'
+// [CHANGED] D. getUnreadedTotal：用 Number()+Math.max() 防 32 位溢出
+// [CHANGED] E. pushOne：已是 Model 直接返回；否则按 JSON:API 推入
+// [CHANGED] F. throttle 正确用法：throttle(delay, fn) 并立即调用返回函数
+// [CHANGED] G. PM 会话匹配一律按 user.id 比较
+// [CHANGED] H. addChat 去重：按 id 去重
+// [CHANGED] I. loadingQueries 的键统一字符串化
+// [CHANGED] J. deleteChat 按 id 过滤
 //
 // === 本次新增（关键修复）===
-// [ADDED] apiFetchChats：真正拉取会话列表；无论成功失败都关闭 this.chatsLoading，避免 UI 无限转圈；按 id 去重并恢复上次选中
+// [ADDED] apiFetchChats：拉取会话列表；无论成功失败都关闭 chatsLoading；按 id 去重并恢复上次选中
+// [FIX]   renderChatMessage 的“提及修复”改为原生 <a> 替换，避免在 Mithril 子树内再次 m.render 造成 NotFoundError
 
 import app from 'flarum/forum/app';
 import Model from 'flarum/common/Model';
 import Stream from 'flarum/common/utils/Stream';
-import Link from 'flarum/common/components/Link';
 import { throttle } from 'flarum/common/utils/throttleDebounce';
 
 import * as resources from '../resources';
@@ -95,7 +95,7 @@ export default class ChatState {
   setRelationship(model, relName, relatedModel) {
     if (!model || !relatedModel) return;
 
-    let id =
+    const id =
       (typeof relatedModel.id === 'function' ? relatedModel.id() : relatedModel.id) ??
       relatedModel?.data?.id ??
       null;
@@ -135,10 +135,10 @@ export default class ChatState {
   handleSocketEvent(packet) {
     if (!packet || !packet.event || !packet.event.id) return;
 
-    let message = this.pushOne(packet.response?.message);
-    let chat = this.pushOne(packet.response?.chat);
+    const message = this.pushOne(packet.response?.message);
+    const chat = this.pushOne(packet.response?.chat);
 
-    // 统一在顶部获取当前用户 id，后续所有“是否本人”判断都用 id 值比较
+    // 统一用 id 值比较“是否本人”
     const meId = app.session.user?.id?.(); // [CHANGED] A
 
     const actions =
@@ -173,7 +173,7 @@ export default class ChatState {
             this.editChatMessage(message, false, actions.msg);
           }
         } else if (Object.prototype.hasOwnProperty.call(actions, 'hide')) {
-          if (!meId || invoker !== meId) { // [CHANGED] A
+          if (!meId || invoker !== meId) {
             actions.hide
               ? this.hideChatMessage(message, false, message.deleted_by?.())
               : this.restoreChatMessage(message, false);
@@ -215,16 +215,16 @@ export default class ChatState {
         if (meId && updated.includes(meId)) {
           const role = app.session.user.chat_pivot(chat.id?.()).role?.();
           const name = chat.title?.() || '';
-          // 翻译占位只传字符串，避免 VNode 变 [object Object]
+          // 仅传字符串占位，避免 [object Object] // [CHANGED] B
           if (role === 0) {
             app.alerts.show(
               { type: 'error' },
-              app.translator.trans('xelson-chat.forum.chat.edit_modal.moderator.lost', { chatname: name }) // [CHANGED] B
+              app.translator.trans('xelson-chat.forum.chat.edit_modal.moderator.lost', { chatname: name })
             );
           } else if (role === 1) {
             app.alerts.show(
               { type: 'success' },
-              app.translator.trans('xelson-chat.forum.chat.edit_modal.moderator.got', { chatname: name }) // [CHANGED] B
+              app.translator.trans('xelson-chat.forum.chat.edit_modal.moderator.got', { chatname: name })
             );
           }
         }
@@ -268,19 +268,19 @@ export default class ChatState {
   }
 
   getChatsSortedByLastUpdate() {
-    return this.getChats().slice().sort((a, b) => {
-      const la = a.last_message?.()?.created_at?.()?.getTime?.() || 0;
-      const lb = b.last_message?.()?.created_at?.()?.getTime?.() || 0;
-      return lb - la;
-    });
+    return this.getChats()
+      .slice()
+      .sort((a, b) => {
+        const la = a.last_message?.()?.created_at?.()?.getTime?.() || 0;
+        const lb = b.last_message?.()?.created_at?.()?.getTime?.() || 0;
+        return lb - la;
+      });
   }
 
   getUnreadedTotal() {
     const list = this.getChats();
     if (!list.length) return 0;
-    return list
-      .map((m) => Math.max(Number(m.unreaded?.() || 0), 0)) // [CHANGED] D
-      .reduce((a, b) => a + b, 0);
+    return list.map((m) => Math.max(Number(m.unreaded?.() || 0), 0)).reduce((a, b) => a + b, 0); // [CHANGED] D
   }
 
   addChat(model, outside = false) {
@@ -438,22 +438,29 @@ export default class ChatState {
       } else {
         el.innerHTML = content;
       }
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.warn('TextFormatter preview error:', e);
+      el.innerHTML = content;
+    }
 
-      // 轻延迟确保 DOM ready
-      setTimeout(() => {
-        // 限宽 <video>
-        el.querySelectorAll('video').forEach((v) => {
-          v.style.maxWidth = '290px';
-          v.style.width = '290px';
-          v.style.height = 'auto';
-          v.style.display = 'block';
-          v.style.boxSizing = 'border-box';
-          v.style.borderRadius = '8px';
-        });
+    // DOM 后处理放入异步，避免与 Mithril 同帧竞争
+    setTimeout(() => {
+      if (!el.isConnected) return;
+
+      // 限宽 <video>
+      el.querySelectorAll('video').forEach((v) => {
+        v.style.maxWidth = '290px';
+        v.style.width = '290px';
+        v.style.height = 'auto';
+        v.style.display = 'block';
+        v.style.boxSizing = 'border-box';
+        v.style.borderRadius = '8px';
+      });
 
       // 处理音频直链
       this.handleAudioEmbeds(el, content);
-   
+
       // 提及修复（deleted mention -> 原生 <a>；避免在 Mithril 子树内再次 m.render）
       if (window.$) {
         window.$(el).find('.UserMention.UserMention--deleted').each(function () {
@@ -473,7 +480,6 @@ export default class ChatState {
 
       // 安全加载 message 内脚本（按 url 去重，不重复注入）
       const self = this;
-      // ✅ 正确用法：throttle(延时, 回调)，返回函数，再立即调用一次
       throttle(100, () => {
         if (!window.$) return;
         window.$('.NeonChatFrame script').each(function () {
@@ -484,9 +490,10 @@ export default class ChatState {
             s.src = scriptURL;
             document.head.appendChild(s);
             self.executedScripts[scriptURL] = true;
-        }
-      });
-    })();
+          }
+        });
+      })();
+    }, 10);
   }
 
   handleAudioEmbeds(element, content) {
@@ -576,7 +583,7 @@ export default class ChatState {
     this._fetchingChats = app.store
       .find('chats', options.params || {})
       .then((records) => {
-        const list = Array.isArray(records) ? records : (records ? [records] : []);
+        const list = Array.isArray(records) ? records : records ? [records] : [];
 
         // 重建列表并按 id 去重
         this.chats = [];
@@ -587,7 +594,7 @@ export default class ChatState {
           const id = chat?.id?.();
           if (id == null || seen.has(id)) return;
           seen.add(id);
-          this.addChat(chat); // 内部负责建 viewportState、命中 selectedChat 时触发 onChatChanged
+          this.addChat(chat); // 内部会建 viewportState，且命中 selectedChat 会自动 onChatChanged
         });
 
         // 若本地有“上次选中的会话”，但刚才没命中，则尽量恢复一次
@@ -610,6 +617,7 @@ export default class ChatState {
         this._fetchingChats = null;
         m.redraw();
       });
+
     return this._fetchingChats;
   }
 
@@ -768,7 +776,11 @@ export default class ChatState {
     model.pushData({
       relationships: { deleted_by: { data: user ? { type: 'users', id: user.id?.() } : null } },
     });
-    if (sync) model.save({ actions: { hide: true }, relationships: { deleted_by: { data: { type: 'users', id: app.session.user.id?.() } } } });
+    if (sync)
+      model.save({
+        actions: { hide: true },
+        relationships: { deleted_by: { data: { type: 'users', id: app.session.user.id?.() } } },
+      });
 
     this.totalHiddenCount++;
     m.redraw();
