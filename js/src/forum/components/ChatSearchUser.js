@@ -1,9 +1,7 @@
 // js/src/forum/components/ChatSearchUser.js
-// [FIX] 1.8 路径 & 导入 app；使用传入的独立 state；不污染全站搜索
-// [CHANGED] sourceItems() 使用 this.state 而不是 app.search.neonchat
-// [CHANGED] canSearchUsers 判定更稳：仅当 attribute 明确为 false 时禁用
-// [FIX] clear() 安全调用 this.state.setValue
-// 其余维持与 core Search API 一致
+// 兼容修复：给 Search Source 自动补上 isCached(query)（以及缺省 results: Map）
+// - 不污染全站搜索：改用传入的 this.attrs.state（getValue/setValue/getInitialSearch）
+// - 仅当 canSearchUsers !== false 时启用用户搜索
 
 import app from 'flarum/forum/app';
 import Search from 'flarum/common/components/Search';
@@ -14,49 +12,80 @@ import icon from 'flarum/common/helpers/icon';
 
 import UsersSearchSource from './UsersSearchResults';
 
+// —— 给任意 source 打补丁：确保有 results 与 isCached(query) —— //
+function withCacheShim(source) {
+  // results：核心实现通常是 Map<string, any[]>；若不存在就给个 Map
+  if (!source.results) {
+    try {
+      source.results = new Map();
+    } catch {
+      source.results = {}; // 极端兜底
+    }
+  }
+
+  // isCached：返回当前 query 是否已有结果
+  if (typeof source.isCached !== 'function') {
+    source.isCached = (query) => {
+      const q = String(query ?? '');
+      const r = source.results;
+
+      // Map 情况
+      if (r && typeof r.has === 'function') return r.has(q);
+      if (r && typeof r.get === 'function') return r.get(q) !== undefined;
+
+      // 普通对象兜底
+      return !!(r && r[q]);
+    };
+  }
+
+  return source;
+}
+
 export default class ChatSearchUser extends Search {
   oninit(vnode) {
     super.oninit(vnode);
-    // [FIX] 确保使用传入的独立 state，而不是全局 app.search
+
+    // 使用传入的 state；若未传入，给一个最小实现，避免读写报错
     this.state =
-      this.attrs.state ?? {
+      this.attrs.state ??
+      {
         getValue: () => '',
         setValue: () => {},
         getInitialSearch: () => '',
       };
+
+    this._sources = null; // 懒加载一次
   }
 
-  sourceItems() {
+  // 只在首次使用时构建，且对 source 打补丁
+  buildSources() {
     const items = new ItemList();
-    // [CHANGED] 仅在明确为 false 时禁用用户搜索；未设置时默认允许
+
+    // 仅当 canSearchUsers !== false 时开启用户搜索
     const can = app.forum.attribute('canSearchUsers');
     if (can !== false) {
-      // [CHANGED] 用 this.state 传入 UsersSearchSource
-      items.add('users', new UsersSearchSource({ state: this.state }));
+      items.add('users', withCacheShim(new UsersSearchSource({ state: this.state })));
     }
-    return items;
+
+    this._sources = items.toArray();
   }
 
-  // Search 基类需要，但本组件不动态限制高度
+  // 兼容 Search 基类
   updateMaxHeight() {}
 
   clear() {
-    // [FIX] 防御式调用
     this.state.setValue?.('');
   }
 
   view() {
+    // 同步初始值（只在空时灌入一次）
     const currentSearch = this.state.getInitialSearch?.() || '';
-
     if (!this.state.getValue?.()?.length) {
       this.state.setValue?.(currentSearch || '');
     }
 
-    if (!this.sources) {
-      this.sources = this.sourceItems().toArray();
-    }
-
-    if (!this.sources.length) return <div></div>;
+    if (!this._sources) this.buildSources();
+    if (!this._sources.length) return <div></div>;
 
     return (
       <div
@@ -96,7 +125,7 @@ export default class ChatSearchUser extends Search {
 
         {this.state.getValue?.() && this.hasFocus ? (
           <ul className="Dropdown-menu Dropdown--Users Search-results">
-            {this.sources.map((source) => source.view(this.state.getValue?.()))}
+            {this._sources.map((source) => source.view(this.state.getValue?.()))}
           </ul>
         ) : null}
       </div>
