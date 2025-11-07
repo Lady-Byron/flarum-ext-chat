@@ -485,8 +485,8 @@ export default class ChatState {
 
     // 安全加载 message 内脚本（按 url 去重，不重复注入）
     const self = this;
-    // [CHANGED] F：正确用法 throttle(fn, wait)，先创建再执行
-    const run = throttle(() => {
+    // ✅ 正确用法：throttle(延时, 回调)，返回函数，再立即调用一次
+    throttle(100, () => {
       if (!window.$) return;
       window.$('.NeonChatFrame script').each(function () {
         self.executedScripts = self.executedScripts || {};
@@ -498,9 +498,7 @@ export default class ChatState {
           self.executedScripts[scriptURL] = true;
         }
       });
-    }, 100);
-    run();
-  }
+    })();
 
   handleAudioEmbeds(element, content) {
     const audioExts = ['.mp3', '.wav', '.ogg', '.m4a', '.aac', '.flac'];
