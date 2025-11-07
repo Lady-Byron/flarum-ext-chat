@@ -13,7 +13,7 @@
 // [CHANGED] J. deleteChat 改为按 id 过滤，提升幂等性
 //
 // === 本次新增（关键修复）===
-// [ADDED]  apiFetchChats：真正拉取会话列表；无论成功失败都关闭 this.chatsLoading，避免 UI 无限转圈；按 id 去重并恢复上次选中
+// [ADDED] apiFetchChats：真正拉取会话列表；无论成功失败都关闭 this.chatsLoading，避免 UI 无限转圈；按 id 去重并恢复上次选中
 
 import app from 'flarum/forum/app';
 import Model from 'flarum/common/Model';
@@ -615,7 +615,7 @@ export default class ChatState {
       .catch((e) => {
         // eslint-disable-next-line no-console
         console.warn('[neon-chat] apiFetchChats error:', e);
-        this.setFrameState?.('failed', true);
+        this.saveFrameState('failed', true);
         return [];
       })
       .finally(() => {
