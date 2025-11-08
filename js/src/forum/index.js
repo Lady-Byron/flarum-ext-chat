@@ -169,3 +169,140 @@ app.initializers.add('xelson-chat:realtime-only', () => {
   // 路由入口（可选）
   addChatPage();
 });
+
+/* ================================
+ *  NEON CHAT DEBUG PROBE（可开关）
+ *  开启：localStorage.setItem('neonchat.debug','1')
+ *  关闭：localStorage.removeItem('neonchat.debug')
+ * ================================ */
+app.initializers.add('xelson-chat:debug-probe', () => {
+  if (localStorage.getItem('neonchat.debug') !== '1') return;
+  if (window.__NEON_PROBE_INSTALLED__) return;
+  window.__NEON_PROBE_INSTALLED__ = true;
+
+  const neonPath = (el) => {
+    if (!el || el.nodeType !== 1) return '';
+    const bits = [];
+    let cur = el;
+    while (cur && cur.nodeType === 1 && bits.length < 8) {
+      const id = cur.id ? `#${cur.id}` : '';
+      const cls = (cur.className || '')
+        .toString()
+        .split(/\s+/)
+        .filter(Boolean)
+        .slice(0, 3)
+        .map((c) => `.${c}`)
+        .join('');
+      const tag = cur.tagName ? cur.tagName.toLowerCase() : 'node';
+      bits.unshift(`${tag}${id}${cls}`);
+      cur = cur.parentElement;
+    }
+    return bits.join(' > ');
+  };
+
+  const inChat = (node) => {
+    try {
+      return !!(node && node.nodeType === 1 && node.closest('.NeonChatFrame'));
+    } catch { return false; }
+  };
+
+  const nearMessage = (node) => {
+    try {
+      return node && node.nodeType === 1 ? node.closest('.message-wrapper') : null;
+    } catch { return null; }
+  };
+
+  const info = (node) => {
+    if (!node || node.nodeType !== 1) return { path: String(node), dataset: {}, html: '' };
+    return {
+      path: neonPath(node),
+      dataset: { ...(node.dataset || {}) },
+      html: node.outerHTML ? node.outerHTML.slice(0, 200) + '…' : '',
+    };
+  };
+
+  const paint = (el, color) => {
+    try {
+      if (el && el.style) {
+        el.__oldOutline = el.style.outline;
+        el.style.outline = `2px solid ${color}`;
+        setTimeout(() => { try { el.style.outline = el.__oldOutline || ''; } catch {} }, 2000);
+      }
+    } catch {}
+  };
+
+  const wrap = (proto, name, handler) => {
+    const orig = proto[name];
+    if (typeof orig !== 'function') return;
+    Object.defineProperty(proto, name, {
+      configurable: true,
+      value: function (...args) {
+        try {
+          return handler.call(this, orig, ...args);
+        } catch (e) {
+          throw e;
+        }
+      },
+    });
+  };
+
+  const logMismatch = ({ method, parent, newNode, refNode }) => {
+    const msgWrap = nearMessage(refNode) || nearMessage(newNode) || nearMessage(parent);
+    const group = `[NEON PROBE] ${method} ref not a child of parent`;
+    console.groupCollapsed(group);
+    console.log('Parent :', info(parent));
+    console.log('Ref    :', info(refNode));
+    console.log('New    :', info(newNode));
+    if (msgWrap) console.log('Nearest .message-wrapper :', info(msgWrap));
+    console.log('Stack  :', new Error().stack);
+    console.groupEnd(group);
+    paint(parent, '#ff4444'); paint(refNode, '#ffaa00'); paint(newNode, '#44aaff');
+    // eslint-disable-next-line no-debugger
+    debugger;
+  };
+
+  const guard = (parent, newNode, refNode) =>
+    inChat(parent) || inChat(newNode) || inChat(refNode);
+
+  // DOM 操作探针（只在聊天区域生效）
+  wrap(Node.prototype, 'insertBefore', function (orig, newNode, refNode) {
+    if (guard(this, newNode, refNode) && refNode && refNode.parentNode !== this) {
+      logMismatch({ method: 'insertBefore', parent: this, newNode, refNode });
+    }
+    return orig.call(this, newNode, refNode);
+  });
+
+  wrap(Node.prototype, 'replaceChild', function (orig, newNode, oldNode) {
+    if (guard(this, newNode, oldNode) && oldNode && oldNode.parentNode !== this) {
+      logMismatch({ method: 'replaceChild', parent: this, newNode, refNode: oldNode });
+    }
+    return orig.call(this, newNode, oldNode);
+  });
+
+  wrap(Node.prototype, 'removeChild', function (orig, child) {
+    if (guard(this, child, null) && child && child.parentNode !== this) {
+      logMismatch({ method: 'removeChild', parent: this, newNode: child, refNode: null });
+    }
+    return orig.call(this, child);
+  });
+
+  wrap(Node.prototype, 'appendChild', function (orig, child) {
+    if (guard(this, child, null)) {
+      const owner = nearMessage(child) || child;
+      console.log('[NEON PROBE] appendChild', { into: info(this), child: info(child), owner: info(owner) });
+    }
+    return orig.call(this, child);
+  });
+
+  // mount 提示，帮助确认装载点与组件
+  const rawMount = m.mount;
+  // eslint-disable-next-line no-undef
+  m.mount = function (root, comp) {
+    if (inChat(root)) {
+      console.log('[NEON PROBE] m.mount on chat root', { root: info(root), comp });
+    }
+    return rawMount.apply(this, arguments);
+  };
+
+  console.info('[NEON PROBE] installed. Enable via localStorage.setItem("neonchat.debug","1")');
+});
