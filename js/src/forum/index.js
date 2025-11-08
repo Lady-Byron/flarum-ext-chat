@@ -1,13 +1,7 @@
 // js/src/forum/index.js
-// 只对接 Blomstra Realtime（Pusher 协议），完全移除对 app.pusher 的依赖。
-// - 读取 websocket.key/host/port/secure，直接 new Pusher 连 Realtime 守护进程
-// - 订阅 'public'（映射为 main）与 'private-user=<id>'（映射为 user）
-// - 在两个频道上监听 'neonchat.events' 并转交给 app.chat.handleSocketEvent
-
 import app from 'flarum/forum/app';
 import { extend } from 'flarum/common/extend';
 import ForumApplication from 'flarum/forum/ForumApplication';
-import Session from 'flarum/common/Session';
 
 import ChatFrame from './components/ChatFrame';
 
@@ -16,15 +10,20 @@ import Message from './models/Message';
 import User from 'flarum/common/models/User';
 import Model from 'flarum/common/Model';
 import ChatState from './states/ChatState';
-import addChatPage from './addChatPage'; // 独立路由入口（可选）
+import addChatPage from './addChatPage';
 
-/* ---------- 工具：幂等创建并挂载浮动 Chat UI ---------- */
+// ---- 轻量工具 ----
+const getAttr = (name, fallback = undefined) =>
+  app.forum && typeof app.forum.attribute === 'function'
+    ? app.forum.attribute(name) ?? fallback
+    : fallback;
+
+/** 幂等挂载浮窗 Chat */
 function mountFloatingChat() {
   const root = document.getElementById('chat');
   if (!root || root.__mounted) return;
 
   if (!app.chat) app.chat = new ChatState();
-
   // eslint-disable-next-line no-undef
   m.mount(root, ChatFrame);
   root.__mounted = true;
@@ -33,13 +32,11 @@ function mountFloatingChat() {
     if ('Notification' in window && app.chat.getFrameState?.('notify')) {
       Notification.requestPermission?.();
     }
-  } catch (_) {}
-
-  try {
-    app.chat.apiFetchChats?.();
-  } catch (_) {}
+  } catch {}
+  app.chat.apiFetchChats?.();
 }
 
+/** 保证 #chat 根节点存在 */
 function ensureChatRoot() {
   const append = () => {
     let el = document.getElementById('chat');
@@ -50,168 +47,95 @@ function ensureChatRoot() {
     }
     if (typeof queueMicrotask === 'function') queueMicrotask(mountFloatingChat);
     else setTimeout(mountFloatingChat, 0);
-    return el;
   };
 
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', append, { once: true });
-    return null;
+  } else {
+    append();
   }
-  return append();
 }
 
-// 顶层尽力创建一次
+// 顶层先创建节点，避免错过 mount 时机
 ensureChatRoot();
 
-/* ---------- 安全读取 forum 属性（app.forum 未就绪时从 app.data 兜底） ---------- */
-function forumAttr(name) {
-  if (app.forum && typeof app.forum.attribute === 'function') {
-    const v = app.forum.attribute(name);
-    if (v !== undefined) return v;
-  }
-  if (app.data) {
-    if (app.data.forum?.attributes && name in app.data.forum.attributes) {
-      return app.data.forum.attributes[name];
-    }
-    if (app.data.attributes && name in app.data.attributes) {
-      return app.data.attributes[name];
-    }
-  }
-  return null;
+/** 连接 Realtime（Pusher/Channels 兼容接口） */
+function connectRealtimeOnce() {
+  if (app.__realtimeClient) return app.__realtimeClient;
+
+  // 这些字段来自 Realtime 的前端配置（或 config.php 的 websocket.js-client-*）
+  const key = getAttr('websocket.key');
+  const host = getAttr('websocket.host');
+  const port = getAttr('websocket.port');
+  const secure = !!getAttr('websocket.secure');
+
+  // 容错：forum 数据未注入时停止（等待下次 mount 再试）
+  if (!key || !host || !port) return null;
+
+  // 注意：Realtime 前端仍走 Pusher Channels 协议；我们用 pusher-js v8 风格的 config
+  // 关键：改鉴权端点到 Realtime 的 API，而非 /pusher/auth
+  const client = new window.Pusher(key, {
+    wsHost: host,
+    wsPort: Number(port),
+    wssPort: Number(port),
+    forceTLS: secure,
+    enabledTransports: ['ws', 'wss'],
+    disableStats: true,
+    channelAuthorization: {
+      endpoint: '/api/websocket/auth',
+      transport: 'ajax',
+      headers: {}, // 同域默认带上 cookie 会话
+    },
+    userAuthentication: {
+      endpoint: '/api/websocket/user-auth',
+      transport: 'ajax',
+      headers: {},
+    },
+  });
+
+  client.connection.bind('state_change', (s) => {
+    // eslint-disable-next-line no-console
+    console.log('[realtime] state:', s.previous, '=>', s.current);
+  });
+
+  app.__realtimeClient = client;
+  return client;
 }
 
-/* ---------- Realtime 直连（无 app.pusher） ---------- */
-const Realtime = (() => {
-  let pusher = null;
-  const channels = { main: null, user: null };
-  const bound = new Set(); // 记录已绑定事件的频道，避免重复绑定
+/** 订阅我们需要的频道并绑定事件处理 */
+function bindRealtimeHandlers() {
+  const client = connectRealtimeOnce();
+  if (!client) return;
 
-  function readCfg() {
-    return {
-      key: forumAttr('websocket.key'),
-      host: forumAttr('websocket.host'),
-      port: forumAttr('websocket.port'),
-      secure: !!forumAttr('websocket.secure'),
-    };
-  }
-
-  function getPusherCtor() {
-    // 优先使用页面全局（Realtime 通常注入）。如果你改为依赖 npm 包，可改成 import Pusher from 'pusher-js'
-    return (window && window.Pusher) || null;
-  }
-
-  function ensureConnection() {
-    if (pusher) return pusher;
-
-    const { key, host, port, secure } = readCfg();
-    const PusherCtor = getPusherCtor();
-
-    if (!PusherCtor || !key || !host) {
-      console.error('[realtime] Pusher unavailable or websocket.* missing', { hasCtor: !!PusherCtor, key, host });
-      return null;
-    }
-
-    pusher = new PusherCtor(key, {
-      wsHost: host,
-      wsPort: port,
-      wssPort: port,
-      forceTLS: secure,
-      enabledTransports: ['ws', 'wss'],
-    });
-
-    pusher.connection.bind('state_change', (s) => {
-      // eslint-disable-next-line no-console
-      console.debug('[realtime] state:', s.previous, '=>', s.current);
-    });
-
-    // 订阅公共频道 => main
-    channels.main = pusher.subscribe('public');
-
-    return pusher;
-  }
-
-  function bindHandlerToChannel(ch) {
-    if (!ch || bound.has(ch)) return;
-    const handler = (payload) => {
-      try {
-        app.chat?.handleSocketEvent?.(payload);
-      } catch (e) {
-        // eslint-disable-next-line no-console
-        console.warn('[realtime] handleSocketEvent failed:', e);
-      }
-    };
-    ch.bind('neonchat.events', handler);
-    bound.add(ch);
-  }
-
-  function bindUserChannel() {
-    if (!ensureConnection()) return;
-    const uid = app.session?.user?.id?.();
-    if (!uid) return;
-
-    const name = `private-user=${uid}`;
-    if (channels.user?.name === name) return;
-
-    // 退订旧用户频道
-    if (channels.user) {
-      try {
-        pusher.unsubscribe(channels.user.name);
-      } catch (_) {}
-      bound.delete(channels.user);
-      channels.user = null;
-    }
-
-    channels.user = pusher.subscribe(name);
-    bindHandlerToChannel(channels.user);
-  }
-
-  function unbindUserChannel() {
-    if (!pusher || !channels.user) return;
+  const handler = (payload) => {
     try {
-      pusher.unsubscribe(channels.user.name);
-    } catch (_) {}
-    bound.delete(channels.user);
-    channels.user = null;
-  }
-
-  function ensureHandlers() {
-    if (!ensureConnection()) return;
-    bindHandlerToChannel(channels.main);
-    bindUserChannel();
-  }
-
-  return {
-    ensureConnection,
-    ensureHandlers,
-    bindUserChannel,
-    unbindUserChannel,
-    channels,
-    get pusher() {
-      return pusher;
-    },
-  };
-})();
-
-/* ---------- 核心初始化 ---------- */
-app.initializers.add('xelson-chat:boot', () => {
-  // 屏蔽“需要 Pusher 或 Websockets”的旧提示
-  const rawShow = app.alerts.show.bind(app.alerts);
-  app.alerts.show = (attrs, content, ...rest) => {
-    const text =
-      typeof content === 'string'
-        ? content
-        : content && content.toString
-        ? content.toString()
-        : '';
-    if (text && text.includes('Pusher or Websockets')) return;
-    return rawShow(attrs, content, ...rest);
+      app.chat?.handleSocketEvent?.(payload);
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.warn('[neonchat] handleSocketEvent failed:', e);
+    }
   };
 
+  // 公共频道：名称为 public（Realtime 默认）
+  const publicChan = client.channel('public') || client.subscribe('public');
+  publicChan.bind('neonchat.events', handler);
+
+  // 登录用户的私有频道：private-user=<id>
+  const uid = app.session?.user?.id?.();
+  if (uid) {
+    const userChanName = `private-user=${uid}`;
+    const userChan = client.channel(userChanName) || client.subscribe(userChanName);
+    userChan.bind('neonchat.events', handler);
+  }
+}
+
+/** ---------- Flarum 初始化 ---------- */
+app.initializers.add('xelson-chat:realtime-only', () => {
   // 模型注册
   app.store.models.chats = Chat;
   app.store.models.chatmessages = Message;
 
-  // User.chat_pivot(chatId) 读取器（兼容 read_at / readed_at）
+  // User.chat_pivot(chatId) 读取器
   function pivot(name, id, attr, transform) {
     return function () {
       const bucket = this.data?.attributes?.[name];
@@ -219,7 +143,6 @@ app.initializers.add('xelson-chat:boot', () => {
       return transform ? transform(val) : val;
     };
   }
-
   Object.assign(User.prototype, {
     chat_pivot(chat_id) {
       return {
@@ -233,25 +156,16 @@ app.initializers.add('xelson-chat:boot', () => {
     },
   });
 
-  // 先尝试挂一次 UI
+  // 第一次挂载与连接
   mountFloatingChat();
+  bindRealtimeHandlers();
 
-  // 在 Forum 挂载完成后，初始化 Realtime 并绑定事件
+  // 再挂到 ForumApplication.mount（双保险，确保 forum 数据就绪时再连一次）
   extend(ForumApplication.prototype, 'mount', function () {
     mountFloatingChat();
-    Realtime.ensureHandlers();
+    bindRealtimeHandlers();
   });
 
-  // 登录/登出时切换私有频道
-  extend(Session.prototype, 'login', function (promise) {
-    promise?.then?.(() => Realtime.bindUserChannel());
-    return promise;
-  });
-  extend(Session.prototype, 'logout', function (promise) {
-    Realtime.unbindUserChannel();
-    return promise;
-  });
-
-  // 可选的独立路由入口
+  // 路由入口（可选）
   addChatPage();
 });
