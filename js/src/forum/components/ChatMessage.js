@@ -1,7 +1,8 @@
 // js/src/forum/components/ChatMessage.js
+// [FIX] 让 .actualMessage 成为“空容器”，其 children 只由 renderChatMessage 管理，避免与 Mithril VDOM 冲突
 // [FIX] 使用 this.$（或 window.$ 兜底）代替裸 $，避免第三方覆盖全局 $ 时闪烁失败
 // [CHANGED] 去掉 100ms 轮询，改为 oncreate 首次渲染 + onupdate 驱动
-// 其余：沿用你现有的 1.8 兼容改造（id 比较/空值守护/导入路径）
+// [KEEP] 其余保持你现有的 1.8 兼容改造（id 比较/空值守护/导入路径）
 
 import app from 'flarum/forum/app';
 import Component from 'flarum/common/Component';
@@ -33,7 +34,6 @@ export default class ChatMessage extends Component {
       () => this.model.freshness,
       () => this.model.user?.()?.freshness,
       () => app.chat.getCurrentChat(),
-
       // reactive attrs
       () => this.model.content,
       () => this.model.isDeletedForever,
@@ -45,7 +45,7 @@ export default class ChatMessage extends Component {
 
   modelEvent(name) {
     const viewportState = app.chat.getViewportState(this.model.chat());
-    viewportState.onChatMessageClicked(name, this.model);
+    viewportState?.onChatMessageClicked?.(name, this.model);
     app.chat.onChatMessageClicked(name, this.model);
   }
 
@@ -101,13 +101,12 @@ export default class ChatMessage extends Component {
                 {this.model.content}
               </div>
             ) : (
+              // ⚠️ 核心点：不要在 VDOM 中给 actualMessage 放文本子节点
               <div
                 className="actualMessage"
                 oncreate={this.onContentWrapperCreated.bind(this)}
                 onupdate={this.onContentWrapperUpdated.bind(this)}
-              >
-                {this.model.content}
-              </div>
+              />
             )}
           </div>
         </div>
@@ -124,7 +123,7 @@ export default class ChatMessage extends Component {
           editing: this.model.isEditing,
           deleted: !this.isVisible(),
         })}
-        data-id={this.model.id()}
+        data-id={this.model.id?.()}
       >
         {this.model ? this.content() : null}
       </div>
@@ -272,36 +271,40 @@ export default class ChatMessage extends Component {
   oncreate(vnode) {
     super.oncreate(vnode);
     this.messageWrapper = vnode.dom;
-    // [CHANGED] 首次渲染一次，后续交由 onupdate/onContentWrapperUpdated 驱动
+    // 首次渲染一次
     this.renderMessage();
   }
 
   onremove(vnode) {
     super.onremove(vnode);
-    // [CHANGED] 取消轮询，无需清理
-  }
-
-  onContentWrapperUpdated(vnode) {
-    super.onupdate(vnode);
-    this.renderMessage(vnode.dom);
   }
 
   onContentWrapperCreated(vnode) {
     super.oncreate(vnode);
-    this.renderMessage(vnode.dom);
+    this.contentEl = vnode.dom;      // 记住 .actualMessage 节点
+    this.renderMessage();
+  }
+
+  onContentWrapperUpdated(vnode) {
+    super.onupdate(vnode);
+    this.contentEl = vnode.dom;
+    this.renderMessage();
   }
 
   renderMessage() {
-    // [FIX] 使用 this.$ 或 window.$，避免裸 $ 在某些环境不可用
+    // 闪烁
     if (this.model.isNeedToFlash && (this.$ || window.$)) {
       const jq = this.$ ? this.$(this.messageWrapper) : window.$(this.messageWrapper);
       app.chat.flashItem(jq);
       this.model.isNeedToFlash = false;
     }
 
+    // 把“元素本身”交给 ChatState，避免它去全局 query 误选父容器
+    if (!this.contentEl || !this.contentEl.isConnected) return;
+
     if (this.model.content !== this.oldContent) {
       this.oldContent = this.model.content;
-      app.chat.renderChatMessage(this.model, this.model.content);
+      app.chat.renderChatMessage(this.contentEl, this.model.content);
     }
   }
 
