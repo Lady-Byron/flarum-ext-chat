@@ -1,9 +1,3 @@
-// js/src/forum/components/ChatCreateModal.js
-// 修复要点：
-// - 复归已有 PM：PATCH 仅发 attributes.users.added=[id]（纯 id）
-// - 新建：POST 使用 JSON:API relationships.users.data 传 {type:'users',id:'...'}
-// - 其它逻辑保持原样，错误提示更清晰
-
 import app from 'flarum/forum/app';
 import Button from 'flarum/common/components/Button';
 import classList from 'flarum/common/utils/classList';
@@ -14,95 +8,124 @@ import ChatModal from './ChatModal';
 export default class ChatCreateModal extends ChatModal {
   oninit(vnode) {
     super.oninit(vnode);
-    this.isChannel = false;
+    this.isChannel = false; // false=私聊/群聊, true=频道
   }
 
   title() {
     return app.translator.trans('xelson-chat.forum.chat.list.add_modal.title');
   }
 
-  onsubmit() {
-    const selected = (this.getSelectedUsers() || []).filter(Boolean);
+  // —— 小工具：把 User 模型数组 → 资源标识符数组 [{type:'users', id:'…'}]
+  toIdentifiers(models) {
+    return (models || [])
+      .filter(Boolean)
+      .map((u) => Model.getIdentifier(u));
+  }
 
-    // 单聊优先：命中已有或已离开的 PM
+  // —— 小工具：取已选用户（去空）
+  selectedUsers() {
+    return (this.getSelectedUsers() || []).filter(Boolean);
+  }
+
+  // —— 复归已存在的 PM（自己曾退出）
+  rejoinExistingChat(existingChat) {
+    const me = app.session.user;
+    const meId = me?.id?.();
+    if (!meId) return;
+
+    existingChat.save({
+      attributes: {
+        users: { added: [String(meId)] } // 纯 id 字符串数组
+      }
+    }).then(() => {
+      app.chat.addChat(existingChat);
+      app.chat.onChatChanged(existingChat);
+      app.alerts.show({ type: 'success' },
+        app.translator.trans('xelson-chat.forum.chat.rejoin.success')
+      );
+      m.redraw();
+    }).catch((error) => {
+      // eslint-disable-next-line no-console
+      console.error('Error rejoining chat:', error);
+      const item = app.chat.getChats().find((c) => c?.id?.() === existingChat.id?.());
+      if (item) {
+        app.chat.onChatChanged(item);
+        app.alerts.show({ type: 'success' },
+          app.translator.trans('xelson-chat.forum.chat.rejoin.opened')
+        );
+      } else {
+        app.alerts.show({ type: 'error' },
+          app.translator.trans('xelson-chat.forum.chat.rejoin.failed')
+        );
+      }
+      m.redraw();
+    });
+
+    this.hide();
+  }
+
+  onsubmit() {
+    const selected = this.selectedUsers();
+
+    // 单人选择 → PM 快捷路径（先找是否已有/是否我曾退出）
     if (!this.isChannel && selected.length === 1) {
       const otherUser = selected[0];
 
-      const existingActiveChat = app.chat.findExistingPMChat(app.session.user, otherUser);
-      if (existingActiveChat) {
-        app.chat.onChatChanged(existingActiveChat);
+      const activePM = app.chat.findExistingPMChat(app.session.user, otherUser);
+      if (activePM) {
+        app.chat.onChatChanged(activePM);
         this.hide();
         m.redraw();
         return;
       }
 
-      const existingLeftChat = app.chat.findAnyPMChatIncludingLeft(app.session.user, otherUser);
-      if (existingLeftChat && existingLeftChat.removed_at && existingLeftChat.removed_at()) {
-        this.rejoinExistingChat(existingLeftChat);
+      const leftPM = app.chat.findAnyPMChatIncludingLeft(app.session.user, otherUser);
+      if (leftPM && leftPM.removed_at && leftPM.removed_at()) {
+        this.rejoinExistingChat(leftPM);
         return;
       }
     }
 
-    // 正常新建
     this.createNewChat(selected);
   }
 
-  // 复归已有 PM —— 只发纯 id
-  rejoinExistingChat(existingChat) {
-    const meId = app.session.user?.id?.();
-    if (!meId) return;
-
-    existingChat
-      .save({ users: { added: [meId] } }) // ✅ 纯 id
-      .then(() => {
-        app.chat.addChat(existingChat);
-        app.chat.onChatChanged(existingChat);
-        app.alerts.show({ type: 'success' }, app.translator.trans('xelson-chat.forum.chat.rejoin.success'));
-        m.redraw();
-      })
-      .catch((error) => {
-        // eslint-disable-next-line no-console
-        console.error('Error rejoining chat:', error);
-        const item = app.chat.getChats().find((c) => c.id && c.id() === existingChat.id());
-        if (item) {
-          app.chat.onChatChanged(item);
-          app.alerts.show({ type: 'success' }, app.translator.trans('xelson-chat.forum.chat.rejoin.opened'));
-        } else {
-          app.alerts.show({ type: 'error' }, app.translator.trans('xelson-chat.forum.chat.rejoin.failed'));
-        }
-        m.redraw();
-      });
-
-    this.hide();
-  }
-
-  // 新建聊天/频道
+  // —— 真正“新建”路径（POST /api/chats）
   createNewChat(passedSelected) {
     const title = (this.getInput().title() || '').trim();
     const icon  = (this.getInput().icon()  || '').trim();
     const color = (this.getInput().color() || '').trim();
 
-    const selected = (passedSelected ?? this.getSelectedUsers() ?? []).filter(Boolean);
+    const selected = (passedSelected || this.selectedUsers());
+    const me = app.session.user;
+    const participants = (!this.isChannel ? [...selected, me].filter(Boolean) : []);
 
-    const payload = {
+    // 组装 JSON:API data
+    const data = {
       type: 'chats',
       attributes: {
-        type: this.isChannel ? 1 : 0,
+        type: this.isChannel ? 1 : 0,   // 0=私聊/群聊, 1=频道
         title,
         icon,
-        color,
-      },
+        color
+      }
     };
 
-    // 私聊/群聊：用 JSON:API relationships 传参与者
+    // 私聊/群聊必须携带 relationships.users.data；频道不要带 users
     if (!this.isChannel) {
-      const ids = [...selected, app.session.user].filter(Boolean).map((u) => Model.getIdentifier(u));
-      payload.relationships = { users: { data: ids } };
+      data.relationships = {
+        users: {
+          data: this.toIdentifiers(participants)
+        }
+      };
     }
+
+    const body = { data };
+    // 仅调试：确认你真正发出去的 JSON
+    console.debug('[neon] create payload', body);
 
     app.store
       .createRecord('chats')
-      .save(payload)
+      .save(body) // 直接传 JSON:API data；Flarum Model 会原样打包
       .then((model) => {
         app.chat.addChat(model);
         app.chat.onChatChanged(model);
@@ -111,16 +134,23 @@ export default class ChatCreateModal extends ChatModal {
       .catch((error) => {
         // eslint-disable-next-line no-console
         console.error('Error creating chat:', error);
-        const msg =
-          error?.status === 400
-            ? app.translator.trans('xelson-chat.forum.chat.create.exists')
-            : app.translator.trans('xelson-chat.forum.chat.create.failed');
-        app.alerts.show({ type: 'error' }, msg);
+        const status = error?.status;
+
+        if (status === 400) {
+          app.alerts.show({ type: 'error' },
+            app.translator.trans('xelson-chat.forum.chat.create.exists')
+          );
+        } else {
+          app.alerts.show({ type: 'error' },
+            app.translator.trans('xelson-chat.forum.chat.create.failed')
+          );
+        }
       });
 
     this.hide();
   }
 
+  // —— UI 下面维持不变 —— //
   componentFormInputColor() {
     return this.componentFormColor({
       title: app.translator.trans('xelson-chat.forum.chat.list.add_modal.form.color.label'),
@@ -177,7 +207,7 @@ export default class ChatCreateModal extends ChatModal {
   }
 
   isCanCreateChat() {
-    const selected = (this.getSelectedUsers() || []).filter(Boolean);
+    const selected = this.selectedUsers();
     if (selected.length > 1 && !(this.getInput().title() || '').length) return false;
     if (!selected.length) return false;
     if (this.alertText()) return false;
