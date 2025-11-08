@@ -16,6 +16,9 @@ xelson-chat:
         actions:
           hide: 隐藏
           resend: 重新发送
+      join_gate:
+        notice: "加入此频道后才能查看消息:P"
+      join: "加入聊天"
     errors:
       unauthenticated: 登录后才能参与聊天
       chatdenied: 您所在的用户组没有权限参与聊天
