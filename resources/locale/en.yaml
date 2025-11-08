@@ -17,6 +17,9 @@ xelson-chat:
       welcome:
         header: Welcome to Neon Chat!
         subheader: Please select a chat on the left for the conversation
+      join_gate:
+        notice: "Join this channel to view messages:P"
+      join: "Join Chat"
       moder: Moderator
       kick: Kick
       leave: Leave
