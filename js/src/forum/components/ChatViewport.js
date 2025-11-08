@@ -1,20 +1,10 @@
-// js/src/forum/components/ChatViewport.js
-// [FIX] 1.8 路径 & 导入 app
-// [CHANGED] 全面改为“按 id 比较（字符串化）”，避免“同 id 不同实例”漏配
-// [CHANGED] loadChat(): 基于实际滚动容器计算回滚位置（wrapper / documentElement）
-// [FIX] Loader 读取 this.state.loading（原误读 this.state.scroll.loading）
-// [CHANGED] getChatWrapper(): 优先返回当前实例的 this.wrapperEl，避免全局选择器误配
-// [FIX] 将所有使用 el.offsetHeight / wrapper.offsetHeight 的位置统一改为 clientHeight，
-//      以兼容 document.documentElement 作为滚动容器的场景（移动端 ChatPage）
-// [FIX] wrapperOnBeforeUpdate(): 使用 this.state.scroll.autoScroll（原误用 this.state.autoScroll）
-// [FIX] 小坑 A：checkUnreaded() 查询消息节点限定在当前视口作用域（this.element）
-// [FIX] 小坑 B：scrollToAnchor() 用矩形差计算相对位移，兼容 documentElement/.wrapper
-// [HARDEN] 加固 1：loadChat() 回滚定位加定时器防抖，切会话频繁不叠加
-// [HARDEN] 加固 2：wrapperOnScroll() 缓存本次回调使用的 state，避免切会话竞态
+// [GATE] 必须点击加入才能看：频道且未加入 -> 不渲染消息与滚动逻辑，只显示加入按钮
+// 其余保留你现有 1.8 修复
 
 import app from 'flarum/forum/app';
 import Component from 'flarum/common/Component';
 import LoadingIndicator from 'flarum/common/components/LoadingIndicator';
+import Button from 'flarum/common/components/Button';
 
 import ChatInput from './ChatInput';
 import ChatMessage from './ChatMessage';
@@ -23,6 +13,7 @@ import ChatWelcome from './ChatWelcome';
 import Message from '../models/Message';
 import timedRedraw from '../utils/timedRedraw';
 import ChatPage from './ChatPage';
+import ChatEditModal from './ChatEditModal';
 
 export default class ChatViewport extends Component {
   oninit(vnode) {
@@ -51,14 +42,37 @@ export default class ChatViewport extends Component {
     }
   }
 
+  /* ---------------- GATE helpers ---------------- */
+  isChannel(model = this.model) {
+    return !!model && model.type?.() === 1;
+  }
+  isJoined(model = this.model) {
+    // 频道外一律视为“已加入”（不拦）
+    if (!this.isChannel(model)) return true;
+    const me = app.session.user;
+    if (!me) return false;
+    const pivot = me.chat_pivot && me.chat_pivot(model.id?.());
+    return !!(pivot && !pivot.removed_at?.());
+  }
+  openJoinModal() {
+    app.modal.show(ChatEditModal, { model: this.model });
+  }
+
+  /* ---------------------------------------------- */
+
   loadChat() {
     if (!this.state) return;
+
+    // 未加入频道：不加载消息、不定位滚动
+    if (this.isChannel() && !this.isJoined()) {
+      this.state.messagesFetched = false;
+      return;
+    }
 
     const oldScroll = Number(this.state.scroll.oldScroll || 0);
     this.reloadMessages();
     m.redraw();
 
-    // [HARDEN] 防抖，避免频繁切会话导致多次定位叠加
     if (this._loadTimer) clearTimeout(this._loadTimer);
     this._loadTimer = setTimeout(() => {
       const chatWrapper = this.getChatWrapper();
@@ -75,8 +89,10 @@ export default class ChatViewport extends Component {
 
   view() {
     if (this.model) {
+      const gated = this.isChannel() && !this.isJoined();
+
       return (
-        <div className="ChatViewport">
+        <div className={'ChatViewport' + (gated ? ' ChatViewport--gated' : '')}>
           <div
             className="wrapper"
             oncreate={this.wrapperOnCreate.bind(this)}
@@ -84,21 +100,38 @@ export default class ChatViewport extends Component {
             onupdate={this.wrapperOnUpdate.bind(this)}
             onremove={this.wrapperOnRemove.bind(this)}
           >
-            {this.componentLoader(this.state?.loading)}
-            {this.componentsChatMessages(this.model).concat(
-              this.state.input.writingPreview ? this.componentChatMessage(this.state.input.previewModel) : []
-            )}
+            {/* 未加入：不渲染任何消息/loader */}
+            {!gated ? this.componentLoader(this.state?.loading) : null}
+            {!gated
+              ? this.componentsChatMessages(this.model).concat(
+                  this.state.input.writingPreview ? this.componentChatMessage(this.state.input.previewModel) : []
+                )
+              : null}
           </div>
-          <ChatInput
-            state={this.state}
-            model={this.model}
-            oninput={() => {
-              if (this.nearBottom() && !this.state.messageEditing) {
-                this.scrollToBottom();
-              }
-            }}
-          />
-          {this.isFastScrollAvailable() ? this.componentScroller() : null}
+
+          {/* 未加入：用加入按钮替换输入区 */}
+          {gated ? (
+            <div className="ChatGate">
+              <p style="margin:8px 0 12px;opacity:.75;">
+                {app.translator.trans('xelson-chat.forum.chat.join_gate.notice')}
+              </p>
+              <Button className="Button Button--primary ButtonJoin" onclick={this.openJoinModal.bind(this)}>
+                {app.translator.trans('xelson-chat.forum.chat.join')}
+              </Button>
+            </div>
+          ) : (
+            <ChatInput
+              state={this.state}
+              model={this.model}
+              oninput={() => {
+                if (this.nearBottom() && !this.state.messageEditing) {
+                  this.scrollToBottom();
+                }
+              }}
+            />
+          )}
+
+          {!gated && this.isFastScrollAvailable() ? this.componentScroller() : null}
         </div>
       );
     }
@@ -116,8 +149,9 @@ export default class ChatViewport extends Component {
       : <ChatMessage key={model.id()} model={model} />;
   }
 
-  // [CHANGED] 用 id 比较，规避“同 id 不同实例”漏配
   componentsChatMessages(chat) {
+    // 未加入频道：直接返回空列表（即使 store 里已有缓存也不显示）
+    if (this.isChannel(chat) && !this.isJoined(chat)) return [];
     const chatId = String(chat?.id?.() ?? '');
     return app.chat
       .getChatMessages((mdl) => String(mdl.chat()?.id?.() ?? '') === chatId)
@@ -152,7 +186,7 @@ export default class ChatViewport extends Component {
     if (this.isPhone() && app.current.matches?.(ChatPage)) {
       return document.documentElement;
     }
-    if (this.wrapperEl) return this.wrapperEl; // [CHANGED] 优先当前实例 wrapper
+    if (this.wrapperEl) return this.wrapperEl;
     const wrapper = this.element?.querySelector?.('.wrapper')
       || document.querySelector('.ChatViewport .wrapper');
     return wrapper || null;
@@ -160,6 +194,9 @@ export default class ChatViewport extends Component {
 
   isFastScrollAvailable() {
     if (!this.state || !this.model) return false;
+    // 未加入也不显示快捷滚动
+    if (this.isChannel() && !this.isJoined()) return false;
+
     const chatWrapper = this.getChatWrapper();
     if (!chatWrapper) return false;
 
@@ -188,6 +225,9 @@ export default class ChatViewport extends Component {
   }
 
   fastMessagesFetch(e) {
+    // 未加入：不取历史
+    if (this.isChannel() && !this.isJoined()) return;
+
     e.redraw = false;
     app.chat.chatmessages = [];
 
@@ -196,7 +236,6 @@ export default class ChatViewport extends Component {
       timedRedraw(300);
 
       this.model.pushAttributes({ unreaded: 0 });
-      // [CHANGED] 用 id 比较
       const message = app.chat
         .getChatMessages((mdl) => String(mdl.chat()?.id?.() ?? '') === String(this.model?.id?.() ?? ''))
         .slice(-1)[0];
@@ -206,7 +245,7 @@ export default class ChatViewport extends Component {
 
   wrapperOnCreate(vnode) {
     super.oncreate(vnode);
-    this.wrapperEl = vnode.dom;            // [CHANGED]
+    this.wrapperEl = vnode.dom;
     this.wrapperOnUpdate(vnode);
 
     const target = app.current.matches?.(ChatPage) ? window : this.wrapperEl;
@@ -220,7 +259,7 @@ export default class ChatViewport extends Component {
       super.onbeforeupdate(vnode, vnodeNew);
       if (
         !this.state ||
-        !this.state.scroll?.autoScroll ||   // [FIX] 使用 this.state.scroll.autoScroll
+        !this.state.scroll?.autoScroll ||
         !this.nearBottom() ||
         !this.state.newPushedPosts
       ) {
@@ -228,7 +267,6 @@ export default class ChatViewport extends Component {
       }
       this.scrollAfterUpdate = true;
     } catch (e) {
-      // eslint-disable-next-line no-console
       console.warn('ChatViewport wrapperOnBeforeUpdate error:', e);
     }
   }
@@ -238,6 +276,9 @@ export default class ChatViewport extends Component {
       super.onupdate(vnode);
       const el = this.getChatWrapper();
       if (!el) return;
+
+      // 未加入：不做任何滚动处理
+      if (this.isChannel() && !this.isJoined()) return;
 
       if (this.model && this.state && this.state.scroll.autoScroll) {
         if (this.autoScrollTimeout) clearTimeout(this.autoScrollTimeout);
@@ -251,7 +292,6 @@ export default class ChatViewport extends Component {
         this.scrollToBottom();
       }
     } catch (e) {
-      // eslint-disable-next-line no-console
       console.warn('ChatViewport wrapperOnUpdate error:', e);
     }
   }
@@ -259,7 +299,6 @@ export default class ChatViewport extends Component {
   wrapperOnRemove(vnode) {
     try {
       super.onremove(vnode);
-      // [HARDEN] 清理 loadChat 防抖定时器
       if (this._loadTimer) { clearTimeout(this._loadTimer); this._loadTimer = null; }
       if (this.boundScrollListener && this.boundScrollTarget) {
         this.boundScrollTarget.removeEventListener('scroll', this.boundScrollListener);
@@ -267,17 +306,19 @@ export default class ChatViewport extends Component {
         this.boundScrollTarget = null;
       }
     } catch (e) {
-      // eslint-disable-next-line no-console
       console.warn('ChatViewport wrapperOnRemove error:', e);
     }
   }
 
   wrapperOnScroll(e) {
+    // 未加入：直接忽略滚动
+    if (this.isChannel() && !this.isJoined()) return;
+
     const el = app.current.matches?.(ChatPage) ? document.documentElement : e.currentTarget;
-    const state = this.state;                         // [HARDEN] 捕获当次回调所用 state
+    const state = this.state;
     if (!el || !state) return;
 
-    state.scroll.oldScroll = el.scrollHeight - el.clientHeight - el.scrollTop; // [FIX] clientHeight
+    state.scroll.oldScroll = el.scrollHeight - el.clientHeight - el.scrollTop;
 
     this.checkUnreaded();
 
@@ -296,14 +337,12 @@ export default class ChatViewport extends Component {
 
     if (!state.messageEditing && el.scrollTop >= 0) {
       if (el.scrollTop <= 500) {
-        // [CHANGED] 用 id 比较
         const topMessage = app.chat
           .getChatMessages((model) => String(model.chat()?.id?.() ?? '') === String(this.model?.id?.() ?? ''))[0];
         if (topMessage && topMessage != this.model.first_message()) {
           app.chat.apiFetchChatMessages(this.model, topMessage.created_at().toISOString());
         }
-      } else if (el.scrollTop + el.clientHeight >= currentHeight - 500) { // [FIX] clientHeight
-        // [CHANGED] 用 id 比较
+      } else if (el.scrollTop + el.clientHeight >= currentHeight - 500) {
         const bottomMessage = app.chat
           .getChatMessages((model) => String(model.chat()?.id?.() ?? '') === String(this.model?.id?.() ?? ''))
           .slice(-1)[0];
@@ -315,9 +354,11 @@ export default class ChatViewport extends Component {
   }
 
   checkUnreaded() {
+    // 未加入：没有已读上报
+    if (this.isChannel() && !this.isJoined()) return;
+
     const wrapper = this.getChatWrapper();
     if (wrapper && this.model && this.model.unreaded() && app.chat.chatIsShown()) {
-      // [CHANGED] 用 id 比较 + 仅取未读区间
       const list = app.chat.getChatMessages(
         (mdl) =>
           String(mdl.chat()?.id?.() ?? '') === String(this.model?.id?.() ?? '') &&
@@ -326,12 +367,10 @@ export default class ChatViewport extends Component {
       );
 
       for (const message of list) {
-        // [FIX] 小坑 A：限定作用域在当前视口，避免命中另一个视口
         const scope = this.element || document;
         const msg = scope.querySelector(`.message-wrapper[data-id="${message.id()}"]`);
         if (!msg) continue;
 
-        // [FIX] 小坑 B 同类：用矩形差判断是否进入可视区，兼容 documentElement / .wrapper
         const msgTop = msg.getBoundingClientRect().top;
         const wrapRectTop = wrapper.getBoundingClientRect().top;
         const visibleBottom = wrapRectTop + wrapper.clientHeight;
@@ -353,7 +392,6 @@ export default class ChatViewport extends Component {
     }
   }
 
-  // [FIX] 改为矩形差定位，兼容不同滚动容器
   scrollToAnchor(anchor) {
     let element;
     if (anchor instanceof Message) {
@@ -379,6 +417,9 @@ export default class ChatViewport extends Component {
   }
 
   scrollToBottom(force = false) {
+    // 未加入：不滚动
+    if (this.isChannel() && !this.isJoined()) return;
+
     this.scrolling = true;
     const chatWrapper = this.getChatWrapper();
     if (chatWrapper) {
@@ -411,6 +452,9 @@ export default class ChatViewport extends Component {
   }
 
   reloadMessages() {
+    // 未加入频道：不取消息
+    if (this.isChannel() && !this.isJoined()) return;
+
     if (!this.state.messagesFetched) {
       let query;
       if (this.model.unreaded()) {
@@ -420,7 +464,6 @@ export default class ChatViewport extends Component {
 
       app.chat.apiFetchChatMessages(this.model, query).then(() => {
         if (this.model.unreaded()) {
-          // [CHANGED] 用 id 比较
           const anchor = app.chat.getChatMessages(
             (mdl) =>
               String(mdl.chat()?.id?.() ?? '') === String(this.model?.id?.() ?? '') &&
