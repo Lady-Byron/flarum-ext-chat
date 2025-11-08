@@ -1,9 +1,4 @@
 // js/src/forum/components/ChatCreateModal.js
-// 修复要点：
-// - 新建：发送 { type, users: number[], title?/icon?/color? }，不用 relationships
-// - 复归：只发 { users: { added: [id] } }，不用 relationships
-// - 过滤空字符串（icon/color 为空就不发）
-// - 其它逻辑保持不变
 
 import app from 'flarum/forum/app';
 import Button from 'flarum/common/components/Button';
@@ -24,64 +19,49 @@ export default class ChatCreateModal extends ChatModal {
   onsubmit() {
     const selected = (this.getSelectedUsers() || []).filter(Boolean);
 
-    // 单聊优先：若只选 1 个用户，尝试复用/复归
+    // 单聊优先：尝试复用/复归
     if (!this.isChannel && selected.length === 1) {
       const otherUser = selected[0];
 
-      // 已有活跃 PM -> 直接打开
-      const active = app.chat.findExistingPMChat(app.session.user, otherUser);
-      if (active) {
-        app.chat.onChatChanged(active);
+      const existingActive = app.chat.findExistingPMChat(app.session.user, otherUser);
+      if (existingActive) {
+        app.chat.onChatChanged(existingActive);
         this.hide();
         m.redraw();
         return;
       }
 
-      // 复归自己离开的 PM
-      const left = app.chat.findAnyPMChatIncludingLeft(app.session.user, otherUser);
-      if (left && left.removed_at && left.removed_at()) {
-        this.rejoinExistingChat(left);
+      const existingLeft = app.chat.findAnyPMChatIncludingLeft(app.session.user, otherUser);
+      if (existingLeft && existingLeft.removed_at && existingLeft.removed_at()) {
+        this.rejoinExistingChat(existingLeft);
         return;
       }
     }
 
-    // 多人或无历史 → 新建
     this.createNewChat(selected);
   }
 
-  // 复归既有 PM：只把自己（id）加入，后端不需要 relationships
+  // ✅ 复归：只发 attributes.users.added = [id]；不要 relationships
   rejoinExistingChat(existingChat) {
     const meId = app.session.user?.id?.();
     if (!meId) return;
 
     existingChat
-      .save({
-        users: { added: [meId] }, // ✅ 只发 id
-      })
+      .save({ users: { added: [meId] } })
       .then(() => {
         app.chat.addChat(existingChat);
         app.chat.onChatChanged(existingChat);
-        app.alerts.show(
-          { type: 'success' },
-          app.translator.trans('xelson-chat.forum.chat.rejoin.success')
-        );
+        app.alerts.show({ type: 'success' }, app.translator.trans('xelson-chat.forum.chat.rejoin.success'));
         m.redraw();
       })
       .catch((error) => {
-        // eslint-disable-next-line no-console
         console.error('Error rejoining chat:', error);
         const item = app.chat.getChats().find((c) => c.id && c.id() === existingChat.id());
         if (item) {
           app.chat.onChatChanged(item);
-          app.alerts.show(
-            { type: 'success' },
-            app.translator.trans('xelson-chat.forum.chat.rejoin.opened')
-          );
+          app.alerts.show({ type: 'success' }, app.translator.trans('xelson-chat.forum.chat.rejoin.opened'));
         } else {
-          app.alerts.show(
-            { type: 'error' },
-            app.translator.trans('xelson-chat.forum.chat.rejoin.failed')
-          );
+          app.alerts.show({ type: 'error' }, app.translator.trans('xelson-chat.forum.chat.rejoin.failed'));
         }
         m.redraw();
       });
@@ -89,13 +69,12 @@ export default class ChatCreateModal extends ChatModal {
     this.hide();
   }
 
-  // 新建：后端更稳妥的是 { type, users: [id, ...], title?/icon?/color? }
+  // ✅ 新建：发 attributes.isChannel（布尔）+ attributes.users（id 数组，私聊/群聊时）
   createNewChat(passedSelected) {
     const rawTitle = (this.getInput().title() || '').trim();
     const rawIcon  = (this.getInput().icon()  || '').trim();
     const rawColor = (this.getInput().color() || '').trim();
 
-    // 过滤空字段：为空就不发，避免校验失败
     const title = rawTitle.length ? rawTitle : undefined;
     const icon  = rawIcon.length  ? rawIcon  : undefined;
     const color = rawColor.length ? rawColor : undefined;
@@ -109,16 +88,15 @@ export default class ChatCreateModal extends ChatModal {
       )
     );
 
-    const payload = {
-      type: this.isChannel ? 1 : 0, // 频道=1，私聊=0
-    };
+    // 👇 关键差异：用 isChannel，而不是 type
+    const payload = { isChannel: !!this.isChannel };
     if (title !== undefined) payload.title = title;
     if (icon  !== undefined) payload.icon  = icon;
     if (color !== undefined) payload.color = color;
 
-    // 私聊/多人会话需要明确参与用户；频道通常后端有自己的可见性逻辑
-    if (!this.isChannel && userIds.length) {
-      payload.users = userIds; // ✅ 只发 id 数组
+    // 私聊/群聊需要把参与者放到 attributes.users（id 数组）
+    if (!payload.isChannel && userIds.length) {
+      payload.users = userIds;
     }
 
     app.store
@@ -130,21 +108,11 @@ export default class ChatCreateModal extends ChatModal {
         m.redraw();
       })
       .catch((error) => {
-        // eslint-disable-next-line no-console
         console.error('Error creating chat:', error);
-        const code =
-          (error?.response?.errors?.[0]?.code) || '';
-        if (code === 'chat_exists') {
-          app.alerts.show(
-            { type: 'error' },
-            app.translator.trans('xelson-chat.forum.chat.create.exists')
-          );
-        } else {
-          app.alerts.show(
-            { type: 'error' },
-            app.translator.trans('xelson-chat.forum.chat.create.failed')
-          );
-        }
+        app.alerts.show(
+          { type: 'error' },
+          app.translator.trans('xelson-chat.forum.chat.create.' + (error?.response?.errors?.[0]?.code === 'chat_exists' ? 'exists' : 'failed'))
+        );
       });
 
     this.hide();
@@ -164,12 +132,7 @@ export default class ChatCreateModal extends ChatModal {
       title: app.translator.trans('xelson-chat.forum.chat.list.add_modal.form.icon.label'),
       desc: app.translator.trans('xelson-chat.forum.chat.list.add_modal.form.icon.validator', {
         a: (
-          <a
-            href="https://fontawesome.com/icons?m=free"
-            tabIndex="-1"
-            target="_blank"
-            rel="noopener"
-          >
+          <a href="https://fontawesome.com/icons?m=free" tabIndex="-1" target="_blank" rel="noopener">
             Font Awesome
           </a>
         ),
@@ -261,4 +224,3 @@ export default class ChatCreateModal extends ChatModal {
     );
   }
 }
-
