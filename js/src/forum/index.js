@@ -1,7 +1,8 @@
 // js/src/forum/index.js
-// [FIX] 对接 Blomstra Realtime：主动 new Pusher 并桥接为 app.pusher.then(...)
-// [KEEP] 模型注册 / 路由入口 / 仅使用 Pusher 兼容接口订阅
-// [NOTE] 如后端实际字段是 read_at，这里额外提供 read_at() 作为别名（与 readed_at 并存）
+// 只对接 Blomstra Realtime（Pusher 协议），完全移除对 app.pusher 的依赖。
+// - 读取 websocket.key/host/port/secure，直接 new Pusher 连 Realtime 守护进程
+// - 订阅 'public'（映射为 main）与 'private-user=<id>'（映射为 user）
+// - 在两个频道上监听 'neonchat.events' 并转交给 app.chat.handleSocketEvent
 
 import app from 'flarum/forum/app';
 import { extend } from 'flarum/common/extend';
@@ -15,22 +16,21 @@ import Message from './models/Message';
 import User from 'flarum/common/models/User';
 import Model from 'flarum/common/Model';
 import ChatState from './states/ChatState';
-import addChatPage from './addChatPage'; // 独立路由入口（方案 B）
+import addChatPage from './addChatPage'; // 独立路由入口（可选）
 
-/** ---------- 辅助：实际挂载 ChatFrame（幂等） ---------- */
+/* ---------- 工具：幂等创建并挂载浮动 Chat UI ---------- */
 function mountFloatingChat() {
   const root = document.getElementById('chat');
   if (!root || root.__mounted) return;
 
   if (!app.chat) app.chat = new ChatState();
 
-  // 依赖全局 m（Flarum 打包已注入）
   // eslint-disable-next-line no-undef
   m.mount(root, ChatFrame);
   root.__mounted = true;
 
   try {
-    if ('Notification' in window && app.chat.getFrameState && app.chat.getFrameState('notify')) {
+    if ('Notification' in window && app.chat.getFrameState?.('notify')) {
       Notification.requestPermission?.();
     }
   } catch (_) {}
@@ -40,7 +40,6 @@ function mountFloatingChat() {
   } catch (_) {}
 }
 
-/** ---------- 顶层：幂等创建 #chat（不依赖任何 Flarum 钩子） ---------- */
 function ensureChatRoot() {
   const append = () => {
     let el = document.getElementById('chat');
@@ -61,30 +60,56 @@ function ensureChatRoot() {
   return append();
 }
 
-// 顶层先尽力创建
+// 顶层尽力创建一次
 ensureChatRoot();
 
-/** ---------- Realtime 桥接：new Pusher 并映射为 app.pusher.then(...) ---------- */
-const realtimeBridge = (() => {
-  let pusher = null;
-  let channels = { main: null, user: null };
+/* ---------- 安全读取 forum 属性（app.forum 未就绪时从 app.data 兜底） ---------- */
+function forumAttr(name) {
+  if (app.forum && typeof app.forum.attribute === 'function') {
+    const v = app.forum.attribute(name);
+    if (v !== undefined) return v;
+  }
+  if (app.data) {
+    if (app.data.forum?.attributes && name in app.data.forum.attributes) {
+      return app.data.forum.attributes[name];
+    }
+    if (app.data.attributes && name in app.data.attributes) {
+      return app.data.attributes[name];
+    }
+  }
+  return null;
+}
 
-  function readRealtimeAttrs() {
+/* ---------- Realtime 直连（无 app.pusher） ---------- */
+const Realtime = (() => {
+  let pusher = null;
+  const channels = { main: null, user: null };
+  const bound = new Set(); // 记录已绑定事件的频道，避免重复绑定
+
+  function readCfg() {
     return {
-      key: app.forum.attribute('websocket.key'),
-      host: app.forum.attribute('websocket.host'),
-      port: app.forum.attribute('websocket.port'),
-      secure: !!app.forum.attribute('websocket.secure'),
+      key: forumAttr('websocket.key'),
+      host: forumAttr('websocket.host'),
+      port: forumAttr('websocket.port'),
+      secure: !!forumAttr('websocket.secure'),
     };
   }
 
-  function ensurePusher() {
+  function getPusherCtor() {
+    // 优先使用页面全局（Realtime 通常注入）。如果你改为依赖 npm 包，可改成 import Pusher from 'pusher-js'
+    return (window && window.Pusher) || null;
+  }
+
+  function ensureConnection() {
     if (pusher) return pusher;
 
-    const { key, host, port, secure } = readRealtimeAttrs();
-    const PusherCtor = (window && window.Pusher) || null;
+    const { key, host, port, secure } = readCfg();
+    const PusherCtor = getPusherCtor();
 
-    if (!PusherCtor || !key || !host) return null;
+    if (!PusherCtor || !key || !host) {
+      console.error('[realtime] Pusher unavailable or websocket.* missing', { hasCtor: !!PusherCtor, key, host });
+      return null;
+    }
 
     pusher = new PusherCtor(key, {
       wsHost: host,
@@ -94,34 +119,50 @@ const realtimeBridge = (() => {
       enabledTransports: ['ws', 'wss'],
     });
 
-    // 调试：可看到连接状态
     pusher.connection.bind('state_change', (s) => {
       // eslint-disable-next-line no-console
-      console.debug('[realtime-bridge] state:', s.previous, '=>', s.current);
+      console.debug('[realtime] state:', s.previous, '=>', s.current);
     });
 
-    // 公共频道映射为 main
+    // 订阅公共频道 => main
     channels.main = pusher.subscribe('public');
 
     return pusher;
   }
 
+  function bindHandlerToChannel(ch) {
+    if (!ch || bound.has(ch)) return;
+    const handler = (payload) => {
+      try {
+        app.chat?.handleSocketEvent?.(payload);
+      } catch (e) {
+        // eslint-disable-next-line no-console
+        console.warn('[realtime] handleSocketEvent failed:', e);
+      }
+    };
+    ch.bind('neonchat.events', handler);
+    bound.add(ch);
+  }
+
   function bindUserChannel() {
-    if (!ensurePusher()) return;
+    if (!ensureConnection()) return;
     const uid = app.session?.user?.id?.();
     if (!uid) return;
 
-    const chName = `private-user=${uid}`;
-    if (channels.user && channels.user.name === chName) return; // 已经是当前用户
+    const name = `private-user=${uid}`;
+    if (channels.user?.name === name) return;
 
-    // 若之前有别的用户频道，先退订
-    if (channels.user && channels.user.unsubscribe) {
+    // 退订旧用户频道
+    if (channels.user) {
       try {
         pusher.unsubscribe(channels.user.name);
       } catch (_) {}
+      bound.delete(channels.user);
+      channels.user = null;
     }
 
-    channels.user = pusher.subscribe(chName);
+    channels.user = pusher.subscribe(name);
+    bindHandlerToChannel(channels.user);
   }
 
   function unbindUserChannel() {
@@ -129,26 +170,31 @@ const realtimeBridge = (() => {
     try {
       pusher.unsubscribe(channels.user.name);
     } catch (_) {}
+    bound.delete(channels.user);
     channels.user = null;
   }
 
-  // 对外暴露：返回一个与 flarum/pusher 兼容的 Promise
-  function getPusherPromise() {
-    if (!ensurePusher()) return null;
-
-    // 初次尝试绑定用户频道
+  function ensureHandlers() {
+    if (!ensureConnection()) return;
+    bindHandlerToChannel(channels.main);
     bindUserChannel();
-
-    // 结构与旧代码期望一致：{ channels: { main, user } }
-    return Promise.resolve({ channels });
   }
 
-  return { ensurePusher, bindUserChannel, unbindUserChannel, getPusherPromise, channels: () => channels };
+  return {
+    ensureConnection,
+    ensureHandlers,
+    bindUserChannel,
+    unbindUserChannel,
+    channels,
+    get pusher() {
+      return pusher;
+    },
+  };
 })();
 
-/** ---------- 核心初始化 ---------- */
+/* ---------- 核心初始化 ---------- */
 app.initializers.add('xelson-chat:boot', () => {
-  // 屏蔽 “Pusher or Websockets” 提示（尽量不影响其它 alert）
+  // 屏蔽“需要 Pusher 或 Websockets”的旧提示
   const rawShow = app.alerts.show.bind(app.alerts);
   app.alerts.show = (attrs, content, ...rest) => {
     const text =
@@ -165,7 +211,7 @@ app.initializers.add('xelson-chat:boot', () => {
   app.store.models.chats = Chat;
   app.store.models.chatmessages = Message;
 
-  // User.chat_pivot(chatId) 读取器
+  // User.chat_pivot(chatId) 读取器（兼容 read_at / readed_at）
   function pivot(name, id, attr, transform) {
     return function () {
       const bucket = this.data?.attributes?.[name];
@@ -187,56 +233,25 @@ app.initializers.add('xelson-chat:boot', () => {
     },
   });
 
-  // 立即尝试挂载一次（避免错过 ForumApplication.mount 时机）
+  // 先尝试挂一次 UI
   mountFloatingChat();
 
-  // 补挂到 mount（双保险）
+  // 在 Forum 挂载完成后，初始化 Realtime 并绑定事件
   extend(ForumApplication.prototype, 'mount', function () {
     mountFloatingChat();
+    Realtime.ensureHandlers();
   });
 
-  // ---- Realtime 对接：若没有 flarum/pusher 的 app.pusher，则桥接一个 Promise ----
-  if (!app.pusher) {
-    const p = realtimeBridge.getPusherPromise();
-    if (p) app.pusher = p;
-  }
-
-  // ---- 仅使用 Pusher 兼容接口（保持原有写法）----
-  if (!app.__neonPusherBound && app.pusher) {
-    app.__neonPusherBound = true;
-    app.pusher.then((socket) => {
-      const handler = (payload) => {
-        try {
-          app.chat?.handleSocketEvent?.(payload);
-        } catch (e) {
-          // eslint-disable-next-line no-console
-          console.warn('[xelson-chat] handleSocketEvent failed:', e);
-        }
-      };
-
-      // 调试：看到 true 说明前端已绑定 pusher
-      // eslint-disable-next-line no-console
-      console.log('[neonchat] pusher bound', !!socket);
-
-      // 全站公共事件（含公开频道）
-      if (socket.channels?.main?.bind) socket.channels.main.bind('neonchat.events', handler);
-      // 登录用户的私有事件（私聊、仅本人可见等）
-      if (socket.channels?.user?.bind) socket.channels.user.bind('neonchat.events', handler);
-    });
-  }
-
-  // —— 登录/登出后，自动重绑私有频道 —— //
+  // 登录/登出时切换私有频道
   extend(Session.prototype, 'login', function (promise) {
-    // 登录成功后绑定用户频道
-    promise?.then?.(() => realtimeBridge.bindUserChannel());
+    promise?.then?.(() => Realtime.bindUserChannel());
     return promise;
   });
   extend(Session.prototype, 'logout', function (promise) {
-    // 登出后退订用户频道
-    realtimeBridge.unbindUserChannel();
+    Realtime.unbindUserChannel();
     return promise;
   });
 
-  // 路由入口（方案 B）
+  // 可选的独立路由入口
   addChatPage();
 });
