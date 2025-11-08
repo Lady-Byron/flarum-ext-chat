@@ -1,10 +1,9 @@
 // js/src/forum/components/ChatCreateModal.js
 // 修复要点：
-// - relationships.users 直接传“模型实例数组”（Flarum 1.x 推荐写法）
-// - 复归既有 PM（自己曾离开）走 users.added + relationships.users
-// - 新建使用 type: 0(私聊)/1(频道)，而不是 isChannel
-// - 标题/图标/颜色做空值守护；所有用户数组均 filter(Boolean)
-// - 其它逻辑保持与原版一致
+// - 新建：发送 { type, users: number[], title?/icon?/color? }，不用 relationships
+// - 复归：只发 { users: { added: [id] } }，不用 relationships
+// - 过滤空字符串（icon/color 为空就不发）
+// - 其它逻辑保持不变
 
 import app from 'flarum/forum/app';
 import Button from 'flarum/common/components/Button';
@@ -23,53 +22,43 @@ export default class ChatCreateModal extends ChatModal {
   }
 
   onsubmit() {
-    // 统一取“已选用户”并清理空位
     const selected = (this.getSelectedUsers() || []).filter(Boolean);
 
-    // 单聊优先处理：如果只选择了 1 位用户
+    // 单聊优先：若只选 1 个用户，尝试复用/复归
     if (!this.isChannel && selected.length === 1) {
       const otherUser = selected[0];
 
-      // 1) 已有活跃 PM -> 直接切换到该会话
-      const existingActiveChat = app.chat.findExistingPMChat(app.session.user, otherUser);
-      if (existingActiveChat) {
-        app.chat.onChatChanged(existingActiveChat);
+      // 已有活跃 PM -> 直接打开
+      const active = app.chat.findExistingPMChat(app.session.user, otherUser);
+      if (active) {
+        app.chat.onChatChanged(active);
         this.hide();
         m.redraw();
         return;
       }
 
-      // 2) 找到“曾经存在但自己退出过”的 PM -> 对原会话执行复归
-      const existingLeftChat = app.chat.findAnyPMChatIncludingLeft(app.session.user, otherUser);
-      if (existingLeftChat && existingLeftChat.removed_at && existingLeftChat.removed_at()) {
-        this.rejoinExistingChat(existingLeftChat);
+      // 复归自己离开的 PM
+      const left = app.chat.findAnyPMChatIncludingLeft(app.session.user, otherUser);
+      if (left && left.removed_at && left.removed_at()) {
+        this.rejoinExistingChat(left);
         return;
       }
     }
 
-    // 多人或无历史 → 正常新建
+    // 多人或无历史 → 新建
     this.createNewChat(selected);
   }
 
-  // 复归既有 PM（关键修复）：在原会话上执行 users.added，并发送 relationships.users（模型实例）
+  // 复归既有 PM：只把自己（id）加入，后端不需要 relationships
   rejoinExistingChat(existingChat) {
-    const me = app.session.user;
-
-    // 以“当前会话用户 + 自己”为准
-    const users = (existingChat.users() || []).slice();
-    if (!users.find((u) => u && u.id && me && u.id() === me.id())) {
-      users.push(me);
-    }
-
-    const userModels = users.filter(Boolean);
+    const meId = app.session.user?.id?.();
+    if (!meId) return;
 
     existingChat
       .save({
-        users: { added: [me] },                    // ✅ 复归把自己加入
-        relationships: { users: userModels },      // ✅ 直接传模型实例数组
+        users: { added: [meId] }, // ✅ 只发 id
       })
       .then(() => {
-        // 确保列表中存在并切换
         app.chat.addChat(existingChat);
         app.chat.onChatChanged(existingChat);
         app.alerts.show(
@@ -79,7 +68,6 @@ export default class ChatCreateModal extends ChatModal {
         m.redraw();
       })
       .catch((error) => {
-        // 打不开就尽量回到同 ID 的列表项
         // eslint-disable-next-line no-console
         console.error('Error rejoining chat:', error);
         const item = app.chat.getChats().find((c) => c.id && c.id() === existingChat.id());
@@ -101,25 +89,36 @@ export default class ChatCreateModal extends ChatModal {
     this.hide();
   }
 
-  // 正常新建会话/频道
+  // 新建：后端更稳妥的是 { type, users: [id, ...], title?/icon?/color? }
   createNewChat(passedSelected) {
-    const title = (this.getInput().title() || '').trim();
-    const icon  = (this.getInput().icon()  || '').trim();
-    const color = (this.getInput().color() || '').trim();
+    const rawTitle = (this.getInput().title() || '').trim();
+    const rawIcon  = (this.getInput().icon()  || '').trim();
+    const rawColor = (this.getInput().color() || '').trim();
 
-    // 统一取“已选用户”并清理空位（优先复用传入）
+    // 过滤空字段：为空就不发，避免校验失败
+    const title = rawTitle.length ? rawTitle : undefined;
+    const icon  = rawIcon.length  ? rawIcon  : undefined;
+    const color = rawColor.length ? rawColor : undefined;
+
     const selected = (passedSelected ?? this.getSelectedUsers() ?? []).filter(Boolean);
+    const userIds = Array.from(
+      new Set(
+        [...selected, app.session.user]
+          .map((u) => (u ? (typeof u.id === 'function' ? u.id() : u.id) : null))
+          .filter((id) => id != null)
+      )
+    );
 
-    // 构造“将参与的用户”：已选 + 自己
-    const userModels = [...selected, app.session.user].filter(Boolean);
+    const payload = {
+      type: this.isChannel ? 1 : 0, // 频道=1，私聊=0
+    };
+    if (title !== undefined) payload.title = title;
+    if (icon  !== undefined) payload.icon  = icon;
+    if (color !== undefined) payload.color = color;
 
-    // 按 Flarum 习惯使用 type: 0(私聊)/1(频道)
-    const payload = { title, type: this.isChannel ? 1 : 0, icon, color };
-
-    // 仅在“私聊/多人聊天”且确实有用户时才附加 users 关系；
-    // 频道通常由后端自动附加可见用户，避免多传
-    if (!this.isChannel && userModels.length) {
-      payload.relationships = { users: userModels }; // ✅ 直接传模型实例数组
+    // 私聊/多人会话需要明确参与用户；频道通常后端有自己的可见性逻辑
+    if (!this.isChannel && userIds.length) {
+      payload.users = userIds; // ✅ 只发 id 数组
     }
 
     app.store
@@ -133,7 +132,9 @@ export default class ChatCreateModal extends ChatModal {
       .catch((error) => {
         // eslint-disable-next-line no-console
         console.error('Error creating chat:', error);
-        if (error && error.status === 400) {
+        const code =
+          (error?.response?.errors?.[0]?.code) || '';
+        if (code === 'chat_exists') {
           app.alerts.show(
             { type: 'error' },
             app.translator.trans('xelson-chat.forum.chat.create.exists')
@@ -260,3 +261,4 @@ export default class ChatCreateModal extends ChatModal {
     );
   }
 }
+
