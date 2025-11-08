@@ -12,13 +12,7 @@
 // [CHANGED] I. loadingQueries 的键统一字符串化
 // [CHANGED] J. deleteChat 按 id 过滤
 //
-// === 本次新增（加入门禁 GATE）===
-// [ADDED] isChannel/isJoined：频道 + 未加入判定（以 user.chat_pivot(chat_id).removed_at 为准）
-// [ADDED] handleSocketEvent：对未加入频道的消息事件一律丢弃（不插入/不提示音/不计未读）
-// [ADDED] apiFetchChatMessages / apiReadChat / postChatMessage：未加入频道直接短路
-// [ADDED] getUnreadedTotal：未加入频道的未读计 0
-//
-// === 本次新增（你上轮就有）===
+// === 本次新增（关键修复）===
 // [ADDED] apiFetchChats：拉取会话列表；无论成功失败都关闭 chatsLoading；按 id 去重并恢复上次选中
 // [FIX]   renderChatMessage 的“提及修复”改为原生 <a> 替换，避免在 Mithril 子树内再次 m.render 造成 NotFoundError
 
@@ -81,23 +75,6 @@ export default class ChatState {
   }
 
   /* --------------------------------
-   *  GATE：加入判定
-   * -------------------------------- */
-  // eslint-disable-next-line class-methods-use-this
-  isChannel(chat) {
-    return !!chat && chat.type?.() === 1;
-  }
-  // eslint-disable-next-line class-methods-use-this
-  isJoined(chat) {
-    if (!chat) return false;
-    if (!this.isChannel(chat)) return true; // PM/群聊不拦
-    const me = app.session.user;
-    if (!me) return false;
-    const pivot = me.chat_pivot && me.chat_pivot(chat.id?.());
-    return !!(pivot && !pivot.removed_at?.());
-  }
-
-  /* --------------------------------
    *  实用方法
    * -------------------------------- */
 
@@ -119,7 +96,9 @@ export default class ChatState {
     if (!model || !relatedModel) return;
 
     const id =
-      (typeof relatedModel.id === 'function' ? relatedModel.id() : relatedModel.id) ?? relatedModel?.data?.id ?? null;
+      (typeof relatedModel.id === 'function' ? relatedModel.id() : relatedModel.id) ??
+      relatedModel?.data?.id ??
+      null;
 
     let type = null;
     if (relatedModel instanceof Model) {
@@ -165,14 +144,14 @@ export default class ChatState {
     const actions =
       packet.response?.actions ||
       (packet.response?.message &&
-        (packet.response.message.data?.attributes?.actions || packet.response.message?.attributes?.actions)) ||
+        (packet.response.message.data?.attributes?.actions ||
+          packet.response.message?.attributes?.actions)) ||
       {};
 
-    // === GATE：未加入频道的消息事件一律丢弃 ===
-    const targetChat = message?.chat?.() || chat || null;
-    const blockedByGate =
-      targetChat && this.isChannel(targetChat) && !this.isJoined(targetChat) && ['message.post', 'message.edit', 'message.delete'].includes(packet.event.id);
-    if (blockedByGate) return;
+    // 屏蔽：对已离开的公开频道（type=1）不弹
+    if (message && message.chat?.() && message.chat().type?.() === 1 && message.chat().removed_at?.()) {
+      return;
+    }
 
     switch (packet.event.id) {
       case 'message.post': {
@@ -236,6 +215,7 @@ export default class ChatState {
         if (meId && updated.includes(meId)) {
           const role = app.session.user.chat_pivot(chat.id?.()).role?.();
           const name = chat.title?.() || '';
+          // 仅传字符串占位，避免 [object Object] // [CHANGED] B
           if (role === 0) {
             app.alerts.show(
               { type: 'error' },
@@ -300,13 +280,7 @@ export default class ChatState {
   getUnreadedTotal() {
     const list = this.getChats();
     if (!list.length) return 0;
-    return list
-      .map((m) => {
-        // GATE：未加入频道不计未读
-        if (this.isChannel(m) && !this.isJoined(m)) return 0;
-        return Math.max(Number(m.unreaded?.() || 0), 0);
-      })
-      .reduce((a, b) => a + b, 0); // [CHANGED] D
+    return list.map((m) => Math.max(Number(m.unreaded?.() || 0), 0)).reduce((a, b) => a + b, 0); // [CHANGED] D
   }
 
   addChat(model, outside = false) {
@@ -419,16 +393,13 @@ export default class ChatState {
   insertChatMessage(model, notify = false) {
     if (!model || this.isChatMessageExists(model)) return null;
 
-    // GATE：未加入频道不落本地（不显示、不计未读）
-    const chatModel = model.chat?.();
-    if (chatModel && this.isChannel(chatModel) && !this.isJoined(chatModel)) return null;
-
     this.chatmessages.push(model);
 
     if (notify) {
       this.messageNotify(model);
       model.isNeedToFlash = true;
 
+      const chatModel = model.chat?.();
       if (chatModel) {
         chatModel.isNeedToFlash = true;
         const current = parseInt(chatModel.unreaded?.() ?? 0, 10) || 0;
@@ -436,13 +407,14 @@ export default class ChatState {
       }
     }
 
-    if (chatModel) {
-      const list = this.getChatMessages((m) => m.chat?.() == chatModel);
-      if ((notify || chatModel.removed_at?.()) && model.id?.() && list[list.length - 1] === model) {
-        this.setRelationship(chatModel, 'last_message', model); // 维护 last_message
-        const vp = this.getViewportState(chatModel);
-        if (vp) vp.newPushedPosts = true;
-      }
+    const chatModel = model.chat?.();
+    if (!chatModel) return;
+
+    const list = this.getChatMessages((m) => m.chat?.() == chatModel);
+    if ((notify || chatModel.removed_at?.()) && model.id?.() && list[list.length - 1] === model) {
+      this.setRelationship(chatModel, 'last_message', model); // 维护 last_message
+      const vp = this.getViewportState(chatModel);
+      if (vp) vp.newPushedPosts = true;
     }
   }
 
@@ -653,9 +625,6 @@ export default class ChatState {
    *  阅读回执 / 拉取消息
    * -------------------------------- */
   apiReadChat(chat, messageOrDate) {
-    // GATE：未加入频道不发已读
-    if (this.isChannel(chat) && !this.isJoined(chat)) return;
-
     if (this.readingTimeout) clearTimeout(this.readingTimeout);
 
     let timestamp;
@@ -670,9 +639,6 @@ export default class ChatState {
   }
 
   apiFetchChatMessages(model, query, options = {}) {
-    // GATE：未加入频道不拉消息
-    if (this.isChannel(model) && !this.isJoined(model)) return;
-
     const viewport = this.getViewportState(model);
     if (!viewport) return;
 
@@ -746,13 +712,7 @@ export default class ChatState {
   postChatMessage(model) {
     if (!model) return Promise.resolve();
 
-    const chatModel = model.chat?.();
-    // GATE：未加入频道不允许发送（保险）
-    if (chatModel && this.isChannel(chatModel) && !this.isJoined(chatModel)) {
-      return Promise.resolve();
-    }
-
-    return model.save({ message: model.content, created_at: new Date(), chat_id: chatModel.id?.() }).then(
+    return model.save({ message: model.content, created_at: new Date(), chat_id: model.chat?.().id?.() }).then(
       (r) => {
         if (r?.data) {
           model.pushData(r.data);
@@ -763,6 +723,7 @@ export default class ChatState {
         model.isNeedToFlash = true;
         model.isEditing = false;
 
+        const chatModel = model.chat?.();
         if (chatModel) {
           this.setRelationship(chatModel, 'last_message', model);
         }
@@ -844,10 +805,6 @@ export default class ChatState {
    *  通知
    * -------------------------------- */
   messageNotify(model) {
-    const chatModel = model.chat?.();
-    // GATE：未加入频道不发通知
-    if (chatModel && this.isChannel(chatModel) && !this.isJoined(chatModel)) return;
-
     const mine = app.session.user && model.user?.()?.id?.() == app.session.user.id?.();
     if (!mine) this.notifyTry(model);
   }
