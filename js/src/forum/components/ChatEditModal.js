@@ -1,7 +1,8 @@
 // js/src/forum/components/ChatEditModal.js
-// [FIX] Import -> flarum/common/*
-// [FIX] 列表包含/比较一律按 id；“踢人”禁用条件按数值角色比较；class -> className
-// [CHANGED] 统一把 user 与 me 的比较从对象比较改为按 id 比较（避免不同实例造成误判）
+// [FIX] 频道 (type=1) 不发送 users.added；“加入聊天”对频道为 no-op
+// [FIX] 初始化 isLocalLeaved 时排除频道；按钮文案/逻辑随之调整
+// [FIX] 保存/离开前用最新 chat 模型，避免 data.id 与 URL 不一致
+// [FIX] 比较一律按 id；class -> className 保持一致
 
 import app from 'flarum/forum/app';
 import Button from 'flarum/common/components/Button';
@@ -19,20 +20,31 @@ export default class ChatEditModal extends ChatModal {
 
     this.getInput().title = Stream(this.model.title());
     this.getInput().color = Stream(this.model.color());
-    this.getInput().icon = Stream(this.model.icon());
+    this.getInput().icon  = Stream(this.model.icon());
 
     this.deleteChatTitleInput = Stream('');
     this.deleteState = 0;
 
     const chatId = this.model.id();
-    const alive = (u) => !u.chat_pivot(chatId).removed_at();
+    const alive  = (u) => !u.chat_pivot(chatId).removed_at();
 
     this.initialUsers = (this.model.users() || []).filter(alive);
     this.setSelectedUsers((this.model.users() || []).filter(alive));
     this.edited = {};
 
     this.isLocalModerator = this.isModer(app.session.user);
-    this.isLocalLeaved = !this.listHasUserById(this.initialUsers, app.session.user);
+    // ✅ 频道永远不需要“加入”，因此不标记为已离开
+    this.isLocalLeaved = !this.isChannel() && !this.listHasUserById(this.initialUsers, app.session.user);
+  }
+
+  // —— 工具 —— //
+  isChannel() {
+    return this.model?.type?.() === 1;
+  }
+
+  freshChat() {
+    const id = this.model?.id?.();
+    return id ? app.store.getById('chats', String(id)) || this.model : this.model;
   }
 
   listHasUserById(list, user) {
@@ -48,14 +60,14 @@ export default class ChatEditModal extends ChatModal {
   onsubmit() {
     const byId = (arr) => arr.map((mdl) => (mdl ? Model.getIdentifier(mdl) : null)).filter(Boolean);
 
-    const added = byId(this.getSelectedUsers().filter((mdl) => !this.listHasUserById(this.initialUsers, mdl)));
+    const added   = byId(this.getSelectedUsers().filter((mdl) => !this.listHasUserById(this.initialUsers, mdl)));
     const removed = byId(this.initialUsers.filter((mdl) => !this.listHasUserById(this.getSelectedUsers(), mdl)));
-    const edited = Object.keys(this.edited).map((k) => (this.edited[k] = { id: k, ...this.edited[k] }));
+    const edited  = Object.keys(this.edited).map((k) => (this.edited[k] = { id: k, ...this.edited[k] }));
 
-    this.model.save({
+    this.freshChat().save({
       title: this.getInput().title(),
       color: this.getInput().color(),
-      icon: this.getInput().icon(),
+      icon:  this.getInput().icon(),
       users: { added, removed, edited },
       relationships: { users: this.getSelectedUsers() },
     });
@@ -114,8 +126,7 @@ export default class ChatEditModal extends ChatModal {
     const myRole = this.roleOf(me);
     const targetRole = this.roleOf(user);
 
-    // [CHANGED] 统一按 id 比较，避免不同实例导致的误判
-    const meId = me && me.id && me.id();
+    const meId   = me && me.id && me.id();
     const userId = user && user.id && user.id();
     const isSelf = String(userId) === String(meId);
 
@@ -128,16 +139,16 @@ export default class ChatEditModal extends ChatModal {
         <Button
           icon={this.isModer(user) ? 'fas fa-times' : 'fas fa-users-cog'}
           onclick={this.userMentionDropdownOnclick.bind(this, user, 'moder')}
-          disabled={isSelf || !this.isCreator(me) || this.isCreator(user)}  // [CHANGED]
+          disabled={isSelf || !this.isCreator(me) || this.isCreator(user)}
         >
           {app.translator.trans('xelson-chat.forum.chat.moder')}
         </Button>
         <Button
           icon="fas fa-trash-alt"
           onclick={this.userMentionDropdownOnclick.bind(this, user, 'kick')}
-          disabled={!isSelf && targetRole >= myRole}                          // [CHANGED]
+          disabled={!isSelf && targetRole >= myRole}
         >
-          {app.translator.trans(`xelson-chat.forum.chat.${isSelf ? 'leave' : 'kick'}`)}  // [CHANGED]
+          {app.translator.trans(`xelson-chat.forum.chat.${isSelf ? 'leave' : 'kick'}`)}
         </Button>
       </Dropdown>
     );
@@ -247,17 +258,16 @@ export default class ChatEditModal extends ChatModal {
         </Button>
       );
 
-    const removedBy = this.model.removed_by && this.model.removed_by();
-    const meId = app.session.user && app.session.user.id && app.session.user.id();
+    // ✅ 对频道：只显示“退出聊天”；对私聊/群聊：未离开显示“退出”，已离开显示“加入”
+    const joinMode = !this.isChannel() && this.isLocalLeaved;
 
     buttons.push(
       <Button
         className="Button Button--primary Button--block ButtonLeave"
         onclick={this.onleave.bind(this)}
-        disabled={!!removedBy && String(removedBy) !== String(meId)}
       >
         {app.translator.trans(
-          `xelson-chat.forum.chat.edit_modal.form.${this.isLocalLeaved ? 'return' : 'leave'}`
+          `xelson-chat.forum.chat.edit_modal.form.${joinMode ? 'return' : 'leave'}`
         )}
       </Button>
     );
@@ -269,22 +279,36 @@ export default class ChatEditModal extends ChatModal {
   }
 
   onleave() {
+    const chat = this.freshChat();
+    const me   = app.session.user;
+
     if (!this.isLocalLeaved) {
-      this.model
+      // 离开（频道/私聊/群聊均可）
+      chat
         .save({
-          users: { removed: [Model.getIdentifier(app.session.user)] },
-          relationships: { users: this.getSelectedUsers() },
+          users: { removed: [Model.getIdentifier(me)] },
         })
         .then(() => m.redraw());
-    } else {
-      this.getSelectedUsers().push(app.session.user);
-      this.model
-        .save({
-          users: { added: [Model.getIdentifier(app.session.user)] },
-          relationships: { users: this.getSelectedUsers() },
-        })
-        .then(() => m.redraw());
+      this.hide();
+      return;
     }
+
+    // 需要“加入”的情况：仅对私聊/群聊；频道不需要显式加入，直接关闭
+    if (this.isChannel()) {
+      app.chat.addChat(chat);
+      app.chat.onChatChanged(chat);
+      this.hide();
+      return;
+    }
+
+    // 私聊/群聊加入
+    this.getSelectedUsers().push(me);
+    chat
+      .save({
+        users: { added: [Model.getIdentifier(me)] },
+        relationships: { users: this.getSelectedUsers() },
+      })
+      .then(() => m.redraw());
     this.hide();
   }
 
@@ -344,7 +368,7 @@ export default class ChatEditModal extends ChatModal {
   content() {
     return (
       <div className="Modal-body">
-        <div className="Form-group InputTitle">{/* [FIX] class -> className */}
+        <div className="Form-group InputTitle">
           {this.componentForm()}
           <div className="ButtonsPadding"></div>
           {this.componentFormButtons()}
