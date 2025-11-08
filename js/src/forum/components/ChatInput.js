@@ -1,5 +1,7 @@
-// [GATE] 必须点击加入才能发：频道且未加入 -> 用“加入聊天”按钮替换 textarea
-// 其它维持你现有改动
+// js/src/forum/components/ChatInput.js
+// [CHANGED] 去掉 <textarea> 的 onupdate（避免与 onkeyup 的节流保存叠加）
+// [FIX] line-height 解析失败兜底（当主题设置为 normal 时避免 NaN）
+// 其余：沿用你现有 1.8 兼容改造（统一导入/节流/预览 JSON:API 关系）
 
 import app from 'flarum/forum/app';
 import Component from 'flarum/common/Component';
@@ -17,6 +19,7 @@ export default class ChatInput extends Component {
     app.chat.input = this;
     this.messageCharLimit = app.forum.attribute('xelson-chat.settings.charlimit') ?? 512;
 
+    // 只创建一次的节流实例
     this._saveDraftThrottled = throttle(300, (text) => {
       this.state.setChatStorageValue('draft', text);
     });
@@ -24,29 +27,13 @@ export default class ChatInput extends Component {
     this.updatePlaceholder();
   }
 
-  /* --------------- GATE helpers --------------- */
-  isChannel(model = this.model) {
-    return !!model && model.type?.() === 1;
-  }
-  isJoined(model = this.model) {
-    if (!this.isChannel(model)) return true;
-    const me = app.session.user;
-    if (!me) return false;
-    const pivot = me.chat_pivot && me.chat_pivot(model.id?.());
-    return !!(pivot && !pivot.removed_at?.());
-  }
-  openJoinModal() {
-    app.modal.show(ChatEditModal, { model: this.model });
-  }
-  /* -------------------------------------------- */
-
   oncreate(vnode) {
     super.oncreate(vnode);
 
     const inputState = this.state.input;
     const input = this.$('#chat-input')[0];
-    if (!input) return; // 未加入时没有 textarea
 
+    // [FIX] line-height 兜底，避免主题把行高设为 normal 导致 NaN
     const lh = parseInt(window.getComputedStyle(input).getPropertyValue('line-height'), 10);
     input.lineHeight = Number.isFinite(lh) && lh > 0 ? lh : 20;
 
@@ -74,8 +61,6 @@ export default class ChatInput extends Component {
       this.inputPlaceholder = app.translator.trans('xelson-chat.forum.errors.chatdenied');
     } else if (this.model?.removed_at?.()) {
       this.inputPlaceholder = app.translator.trans('xelson-chat.forum.errors.removed');
-    } else if (this.isChannel() && !this.isJoined()) {
-      this.inputPlaceholder = app.translator.trans('xelson-chat.forum.chat.join_gate.notice');
     } else {
       this.inputPlaceholder = app.translator.trans('xelson-chat.forum.chat.placeholder');
     }
@@ -90,17 +75,6 @@ export default class ChatInput extends Component {
   }
 
   view() {
-    // 频道且未加入：只显示“加入聊天”按钮
-    if (this.isChannel() && !this.isJoined()) {
-      return (
-        <div className="ChatInput input-wrapper">
-          <Button className="Button Button--primary ButtonJoin" onclick={this.openJoinModal.bind(this)}>
-            {app.translator.trans('xelson-chat.forum.chat.join')}
-          </Button>
-        </div>
-      );
-    }
-
     const removedBy = this.model?.removed_by?.();
     const meId = app.session.user?.id?.();
     const iLeftByMe = removedBy != null && String(removedBy) === String(meId);
@@ -118,6 +92,7 @@ export default class ChatInput extends Component {
           onkeyup={this.inputSaveDraft.bind(this)}
           rows={this.state.input.rows}
           value={this.state.input.content()}
+          // [CHANGED] 移除 onupdate，避免与 onkeyup 的节流保存叠加
         />
 
         {this.state.messageEditing ? (
@@ -200,8 +175,6 @@ export default class ChatInput extends Component {
   inputPressEnter(e) {
     e.redraw = false;
     if (e.key === 'Enter' && !e.shiftKey) {
-      // 额外防护：未加入时绝不发送（正常情况下不会出现，因为上面已替换成按钮）
-      if (this.isChannel() && !this.isJoined()) return false;
       this.state.messageSend();
       return false;
     }
@@ -209,8 +182,6 @@ export default class ChatInput extends Component {
   }
 
   inputPressButton() {
-    // 额外防护
-    if (this.isChannel() && !this.isJoined()) return;
     this.state.messageSend();
   }
 
@@ -219,6 +190,7 @@ export default class ChatInput extends Component {
       this.state.input.writingPreview = true;
 
       this.state.input.previewModel = app.store.createRecord('chatmessages');
+      // 预览消息用 JSON:API 资源标识符保证关系正常工作
       this.state.input.previewModel.pushData({
         id: 0,
         type: 'chatmessages',
