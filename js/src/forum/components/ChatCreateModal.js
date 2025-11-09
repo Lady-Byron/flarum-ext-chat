@@ -41,7 +41,7 @@ export default class ChatCreateModal extends ChatModal {
     this.createNewChat(selected);
   }
 
-  // ✅ 复归：只发 attributes.users.added = [id]；不要 relationships
+  // 复归：只发 attributes.users.added = [id]
   rejoinExistingChat(existingChat) {
     const meId = app.session.user?.id?.();
     if (!meId) return;
@@ -69,35 +69,62 @@ export default class ChatCreateModal extends ChatModal {
     this.hide();
   }
 
-  // ✅ 新建：发 attributes.isChannel（布尔）+ attributes.users（id 数组，私聊/群聊时）
+  // 新建会话：修正为 relationships.users.data（JSON:API），且不包含自己
   createNewChat(passedSelected) {
+    const meId = String(app.session.user?.id?.() ?? '');
     const rawTitle = (this.getInput().title() || '').trim();
     const rawIcon  = (this.getInput().icon()  || '').trim();
     const rawColor = (this.getInput().color() || '').trim();
 
-    const title = rawTitle.length ? rawTitle : undefined;
-    const icon  = rawIcon.length  ? rawIcon  : undefined;
-    const color = rawColor.length ? rawColor : undefined;
-
     const selected = (passedSelected ?? this.getSelectedUsers() ?? []).filter(Boolean);
-    const userIds = Array.from(
+
+    // 参与者 id（去重 + 过滤自己）
+    const selectedIds = Array.from(
       new Set(
-        [...selected, app.session.user]
-          .map((u) => (u ? (typeof u.id === 'function' ? u.id() : u.id) : null))
-          .filter((id) => id != null)
+        selected
+          .map((u) => (u ? String(typeof u.id === 'function' ? u.id() : u.id) : null))
+          .filter((id) => id && id !== meId)
       )
     );
 
-    // 👇 关键差异：用 isChannel，而不是 type
-    const payload = { isChannel: !!this.isChannel };
-    if (title !== undefined) payload.title = title;
-    if (icon  !== undefined) payload.icon  = icon;
-    if (color !== undefined) payload.color = color;
-
-    // 私聊/群聊需要把参与者放到 attributes.users（id 数组）
-    if (!payload.isChannel && userIds.length) {
-      payload.users = userIds;
+    // 校验（按钮层面已限制，这里二次兜底）
+    if (this.isChannel) {
+      if (!rawTitle.length) {
+        app.alerts.show({ type: 'error' }, app.translator.trans('xelson-chat.forum.chat.list.add_modal.form.title.validator'));
+        return;
+      }
+    } else {
+      if (selectedIds.length === 0) {
+        app.alerts.show({ type: 'error' }, app.translator.trans('xelson-chat.forum.chat.create.failed'));
+        return;
+      }
+      if (selectedIds.length > 1 && !rawTitle.length) {
+        app.alerts.show({ type: 'error' }, app.translator.trans('xelson-chat.forum.chat.list.add_modal.form.title.validator'));
+        return;
+      }
     }
+
+    // attributes
+    const attributes = {
+      isChannel: !!this.isChannel,
+    };
+    if (rawTitle.length) attributes.title = rawTitle;
+    if (rawIcon.length)  attributes.icon = rawIcon;
+    if (rawColor.length) attributes.color = rawColor;
+
+    // relationships（仅在非频道时需要传参与者；频道由后端只加创建者）
+    const relationships =
+      !attributes.isChannel && selectedIds.length
+        ? {
+            users: {
+              data: selectedIds.map((id) => ({ type: 'users', id })),
+            },
+          }
+        : undefined;
+
+    // 通过 createRecord.save({ attributes, relationships }) 让 Flarum 前端包装为 JSON:API
+    const payload = { attributes };
+    if (relationships) payload.relationships = relationships;
 
     app.store
       .createRecord('chats')
@@ -109,9 +136,10 @@ export default class ChatCreateModal extends ChatModal {
       })
       .catch((error) => {
         console.error('Error creating chat:', error);
+        const code = error?.response?.errors?.[0]?.code;
         app.alerts.show(
           { type: 'error' },
-          app.translator.trans('xelson-chat.forum.chat.create.' + (error?.response?.errors?.[0]?.code === 'chat_exists' ? 'exists' : 'failed'))
+          app.translator.trans('xelson-chat.forum.chat.create.' + (code === 'chat_exists' ? 'exists' : 'failed'))
         );
       });
 
@@ -175,14 +203,14 @@ export default class ChatCreateModal extends ChatModal {
 
   isCanCreateChat() {
     const selected = (this.getSelectedUsers() || []).filter(Boolean);
-    if (selected.length > 1 && !(this.getInput().title() || '').length) return false;
-    if (!selected.length) return false;
+    if (selected.length > 1 && !(this.getInput().title() || '').length) return false; // 多人群聊必须有标题
+    if (!selected.length) return false; // 至少选择 1 人（单聊可无标题）
     if (this.alertText()) return false;
     return true;
   }
 
   isCanCreateChannel() {
-    return (this.getInput().title() || '').length > 0;
+    return (this.getInput().title() || '').length > 0; // 频道必须有标题
   }
 
   content() {
