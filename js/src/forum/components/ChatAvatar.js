@@ -50,10 +50,13 @@ export default class ChatAvatar extends Component {
 
   componentAvatarPM() {
     const peer = this.peerUser();
-    const url = peer?.avatarUrl?.();
+    // 读取后端下发的原始 attributes，避免被插件覆写的 getter 干扰
+    const raw = peer?.attribute ? peer.attribute('avatarUrl') : null;
+    const hasUploadedAvatar = typeof raw === 'string' && raw.length > 0;
+    const url = hasUploadedAvatar ? raw : null;
 
     // 有头像：用核心 avatar()（允许装饰）
-    if (peer && url) {
+    if (peer && hasUploadedAvatar) {
       return avatar(peer, { className: 'Avatar avatar' });
     }
 
