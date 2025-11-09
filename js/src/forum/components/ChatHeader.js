@@ -1,6 +1,7 @@
 // js/src/forum/components/ChatHeader.js
 // 修复：标题只渲染纯文本；在本地插槽 .chat-icon-slot 中渲染图标，杜绝跨根 DOM 复用
 // [CHANGED] migrate imports; [FIX] onmousedown conditional
+// [ADDED] 频道未加入时显示“加入/退出”快捷按钮（实际动作仍走 ChatEditModal）
 
 import app from 'flarum/forum/app';
 import Component from 'flarum/common/Component';
@@ -100,16 +101,46 @@ export default class ChatHeader extends Component {
     slot.appendChild(i);
   }
 
+  // 是否已加入（pivot 存在且未 removed）
+  isMember(chat) {
+    const me = app.session.user;
+    const chatId = chat?.id?.();
+    if (!me || !chatId) return false;
+    const p = me.chat_pivot && me.chat_pivot(chatId);
+    return !!(p && !p.removed_at?.());
+  }
+
   windowButtonItems() {
     const items = new ItemList();
+    const chat = app.chat.getCurrentChat();
 
-    if (app.chat.getCurrentChat() && app.session.user) {
+    // 加入/退出快捷入口（频道才显示；动作交给 ChatEditModal）
+    if (chat && chat.type?.() === 1 && app.session.user) {
+      const joined = this.isMember(chat);
+      items.add(
+        'joinleave',
+        <div
+          className="icon"
+          data-title={
+            joined
+              ? app.translator.trans('xelson-chat.forum.chat.edit_modal.form.leave')
+              : app.translator.trans('xelson-chat.forum.chat.edit_modal.form.return')
+          }
+          onclick={() => app.modal.show(ChatEditModal, { model: chat })}
+        >
+          <i className={joined ? 'fas fa-door-open' : 'fas fa-door-closed'} />
+        </div>,
+        110
+      );
+    }
+
+    if (chat && app.session.user) {
       items.add(
         'settings',
         <div
           className="icon"
           data-title={app.translator.trans('xelson-chat.forum.toolbar.chat.settings')}
-          onclick={() => app.modal.show(ChatEditModal, { model: app.chat.getCurrentChat() })}
+          onclick={() => app.modal.show(ChatEditModal, { model: chat })}
         >
           <i className="fas fa-cog" />
         </div>,
