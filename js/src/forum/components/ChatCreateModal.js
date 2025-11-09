@@ -1,8 +1,18 @@
 // js/src/forum/components/ChatCreateModal.js
+//
+// [FIX] rejoinExistingChat：加入已退出的私聊时，后端 EditChatHandler 期待 JSON:API 资源标识对象。
+//       之前发送的是纯字符串 ID，后端在 `$u['type']` 处对字符串取下标导致 500。
+//       现改为使用 Model.getIdentifier(me) 生成 { type:'users', id:'...' }，并附带 relationships.users（更稳）。
+//
+// 其他说明（保持原有注释不变）：
+// - 单聊优先复用/复归；否则按频道/群聊/单聊创建逻辑创建新会话。
+// - 新建会话时避免再嵌套 attributes:{...}，直接传顶层属性与 relationships。
+// - Flarum 1.8 路径已统一。
 
 import app from 'flarum/forum/app';
 import Button from 'flarum/common/components/Button';
 import classList from 'flarum/common/utils/classList';
+import Model from 'flarum/common/Model';
 
 import ChatModal from './ChatModal';
 
@@ -41,13 +51,17 @@ export default class ChatCreateModal extends ChatModal {
     this.createNewChat(selected);
   }
 
-  // 复归：只发 users.added = [meId]
+  // 复归：只发 users.added = [meIdentifier]
+  // [FIX] 必须发送 JSON:API 资源标识对象，而不是纯字符串 ID；可选地附带 relationships.users
   rejoinExistingChat(existingChat) {
-    const meId = app.session.user?.id?.();
-    if (!meId) return;
+    const me = app.session.user;
+    if (!me) return;
 
     existingChat
-      .save({ users: { added: [meId] } })
+      .save({
+        users: { added: [Model.getIdentifier(me)] },            // 关键：{ type:'users', id:'...' }
+        relationships: { users: existingChat.users() || [] },   // 可选但更稳：与 EditModal 行为对齐
+      })
       .then(() => {
         app.chat.addChat(existingChat);
         app.chat.onChatChanged(existingChat);
