@@ -10,7 +10,6 @@ namespace Xelson\Chat;
 
 use Carbon\Carbon;
 use Flarum\User\User;
-use Flarum\Database\AbstractModel;
 use Illuminate\Database\Eloquent\Builder;
 use Flarum\Settings\SettingsRepositoryInterface;
 
@@ -20,75 +19,67 @@ class MessageRepository
 
     /**
      * Get a new query builder for the posts table.
-     *
-     * @return Builder
      */
-    public function query()
+    public function query(): Builder
     {
         return Message::query();
     }
 
     /**
      * Find a message by ID
-     *
-     * @param  int 		$id
-     * @param  User 	$actor
-     * @return Message
-     *
-     * @throws \Illuminate\Database\Eloquent\ModelNotFoundException
      */
     public function findOrFail($id)
     {
         return $this->query()->findOrFail($id);
     }
-    
+
     /**
      * Query for visible messages
      *
-     * @param  Chat     $chat
-     * @param  User 	$actor
-     * @return Builder
-     *
-     * @throws \Illuminate\Database\Eloquent\ModelNotFoundException
+     * - 必须是成员且未退出，否则返回空查询
+     * - 成员且 role=0（普通）时，只可见：未被任何人隐藏的消息 或 自己隐藏的消息
      */
-    public function queryVisible(Chat $chat, User $actor)
+    public function queryVisible(Chat $chat, User $actor): Builder
     {
+        /** @var SettingsRepositoryInterface $settings */
         $settings = resolve(SettingsRepositoryInterface::class);
 
-        $query = $this->query();
+        $query    = $this->query();
         $chatUser = $chat->getChatUser($actor);
 
-        if(!$chatUser || !$chatUser->role)
-            $query->where(function ($query) use ($actor) {
-                $query->whereNull('deleted_by')
-                ->orWhere('deleted_by', $actor->id);
+        // 非成员或已退出：不可见
+        if (!$chatUser || $chatUser->removed_at) {
+            return $query->whereRaw('1 = 0');
+        }
+
+        // 普通成员：隐藏他人隐藏的消息
+        if ((int) ($chatUser->role ?? 0) === 0) {
+            $query->where(function (Builder $q) use ($actor) {
+                $q->whereNull('deleted_by')
+                  ->orWhere('deleted_by', $actor->id);
             });
+        }
 
         return $query;
     }
 
     /**
-     * Fetching visible messages by message id
-     * 
-     * @param  int 		$id
-     * @param  User     $actor
-     * @param  int      $chat_id
-     * @return array
-     *
-     * @throws \Illuminate\Database\Eloquent\ModelNotFoundException
+     * Fetching visible messages by time
      */
     public function fetch($time, User $actor, Chat $chat)
     {
         $chatUser = $chat->getChatUser($actor);
 
         $top = $this->queryVisible($chat, $actor)->where('chat_id', $chat->id);
-        if($chatUser && $chatUser->removed_at)
+        if ($chatUser && $chatUser->removed_at) {
             $top->where('created_at', '<=', $chatUser->removed_at);
+        }
         $top->where('created_at', '>=', new Carbon($time))->limit($this->messages_per_fetch + 1);
 
         $bottom = $this->queryVisible($chat, $actor)->where('chat_id', $chat->id);
-        if($chatUser && $chatUser->removed_at)
+        if ($chatUser && $chatUser->removed_at) {
             $bottom->where('created_at', '<=', $chatUser->removed_at);
+        }
         $bottom->where('created_at', '<', new Carbon($time))->orderBy('id', 'desc')->limit($this->messages_per_fetch);
 
         $messages = $top->union($bottom);
