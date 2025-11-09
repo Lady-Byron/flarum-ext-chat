@@ -1,6 +1,7 @@
 // js/src/forum/components/ChatInput.js
 // [CHANGED] 去掉 <textarea> 的 onupdate（避免与 onkeyup 的节流保存叠加）
 // [FIX] line-height 解析失败兜底（当主题设置为 normal 时避免 NaN）
+// [ADDED] 频道发言门槛：未加入频道 -> 输入区替换为“加入频道”按钮（基于 pivot 判定）
 // 其余：沿用你现有 1.8 兼容改造（统一导入/节流/预览 JSON:API 关系）
 
 import app from 'flarum/forum/app';
@@ -54,9 +55,24 @@ export default class ChatInput extends Component {
     this.updatePlaceholder();
   }
 
+  // ----- 成员判定（基于 pivot：存在且未 removed_at）-----
+  getMyPivot() {
+    const me = app.session.user;
+    const chatId = this.model?.id?.();
+    return me && me.chat_pivot ? me.chat_pivot(chatId) : null;
+  }
+  isMember() {
+    const p = this.getMyPivot();
+    return !!(p && !p.removed_at?.());
+  }
+
   updatePlaceholder() {
+    const isChannel = this.model?.type?.() === 1;
     if (!app.session.user) {
       this.inputPlaceholder = app.translator.trans('xelson-chat.forum.errors.unauthenticated');
+    } else if (isChannel && !this.isMember()) {
+      // 未加入频道
+      this.inputPlaceholder = app.translator.trans('xelson-chat.forum.chat.join_channel_hint') || '加入频道后可发言';
     } else if (!app.chat.getPermissions().post) {
       this.inputPlaceholder = app.translator.trans('xelson-chat.forum.errors.chatdenied');
     } else if (this.model?.removed_at?.()) {
@@ -64,6 +80,29 @@ export default class ChatInput extends Component {
     } else {
       this.inputPlaceholder = app.translator.trans('xelson-chat.forum.chat.placeholder');
     }
+  }
+
+  // 点击“加入频道”
+  joinChannel() {
+    const me = app.session.user;
+    if (!me || !this.model) return;
+
+    this.model
+      .save({ users: { added: [Model.getIdentifier(me)] } })
+      .then(() => {
+        // 重新计算占位 & 触发行高计算
+        this.updatePlaceholder();
+        m.redraw();
+        // 可选：加入后把草稿聚焦
+        setTimeout(() => {
+          const el = this.$('#chat-input')[0];
+          if (el) el.focus();
+        }, 0);
+      })
+      .catch((e) => {
+        // eslint-disable-next-line no-console
+        console.error('[chat] joinChannel failed:', e);
+      });
   }
 
   isPhone() {
@@ -75,10 +114,25 @@ export default class ChatInput extends Component {
   }
 
   view() {
-    const removedBy = this.model?.removed_by?.();
-    const meId = app.session.user?.id?.();
-    const iLeftByMe = removedBy != null && String(removedBy) === String(meId);
+    const isChannel = this.model?.type?.() === 1;
+    const member = this.isMember();
 
+    // 我是否“自己退出过”（已有 pivot 但 removed_at != null）
+    const p = this.getMyPivot();
+    const iLeftByMe = !!(p && p.removed_at?.());
+
+    // ---- 非成员频道：仅显示“加入频道”按钮 ----
+    if (isChannel && !member) {
+      return (
+        <div className="ChatInput ChatInput--not-member input-wrapper">
+          <Button className="Button Button--primary Button--block" onclick={() => this.joinChannel()}>
+            {app.translator.trans('xelson-chat.forum.chat.join_channel') || '加入频道'}
+          </Button>
+        </div>
+      );
+    }
+
+    // ---- 已是成员（或私聊/群聊）正常输入 ----
     return (
       <div className="ChatInput input-wrapper">
         <textarea
