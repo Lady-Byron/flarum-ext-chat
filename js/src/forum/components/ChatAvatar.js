@@ -10,29 +10,30 @@ export default class ChatAvatar extends Component {
     this.model = this.attrs.model;
   }
 
-  // 取得一对一会话中的“对方”用户（与消息区一致）
+  // 取得一对一会话中的“对方”用户
   peerUser() {
     const users = (this.model.users && this.model.users()) || [];
     const meId =
       app.session.user && app.session.user.id ? String(app.session.user.id()) : null;
 
-    // 返回第一个不是自己的用户；若只有自己则退回 users[0]
     return users.find((u) => String(u?.id?.()) !== meId) || users[0];
   }
 
   componentAvatarPM() {
     const peer = this.peerUser();
+    const url = peer && peer.avatarUrl && peer.avatarUrl();
 
-    // 使用 Flarum 核心 avatar()，与对话区 DOM 结构一致，避免与头像装饰插件冲突
-    if (peer) {
-      // 叠加原有样式类，保持尺寸/圆角一致
-      return avatar(peer, { className: 'Avatar avatar image' });
+    // 有头像：用核心 avatar()（不要加 image 类）
+    if (peer && url) {
+      return avatar(peer, { className: 'Avatar avatar' });
     }
 
-    // 兜底：未能拿到对方用户时，回退到首字母
-    const letter = (this.firstLetter((this.model.title && this.model.title()) || '') || '')
-      .toUpperCase();
-    return <div className="Avatar avatar image">{letter}</div>;
+    // 无头像：显示首字母（不走 .image，避免被样式/装饰隐藏文字）
+    const letter = (
+      this.firstLetter(peer?.displayName?.() || this.model.title?.() || '') || ''
+    ).toUpperCase();
+
+    return <div className="Avatar avatar">{letter}</div>;
   }
 
   componentAvatarChannel() {
@@ -40,7 +41,7 @@ export default class ChatAvatar extends Component {
 
     return (
       <div
-        className={classList({ avatar: true, image: !!url })}
+        className={classList({ Avatar: true, avatar: true, image: !!url })}
         style={{
           backgroundColor: this.model.color && this.model.color(),
           color: this.model.textColor && this.model.textColor(),
@@ -60,7 +61,7 @@ export default class ChatAvatar extends Component {
   }
 
   view() {
-    // type==1: 频道，其余为私聊
+    // type==1: 频道；其他是私聊
     return (this.model.type && this.model.type()) == 1
       ? this.componentAvatarChannel()
       : this.componentAvatarPM();
@@ -78,3 +79,4 @@ export default class ChatAvatar extends Component {
     return c && c.toLowerCase() !== c.toUpperCase();
   }
 }
+
