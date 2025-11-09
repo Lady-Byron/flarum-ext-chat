@@ -8,31 +8,31 @@ use Flarum\Settings\SettingsRepositoryInterface;
 
 class ChatSerializer extends AbstractSerializer
 {
-    /**
-     * JSON:API resource type
-     * @var string
-     */
     protected $type = 'chats';
 
-    /**
-     * @var SettingsRepositoryInterface
-     */
-    protected $settings;
+    protected SettingsRepositoryInterface $settings;
 
     public function __construct(SettingsRepositoryInterface $settings)
     {
         $this->settings = $settings;
     }
 
-    /**
-     * @param object|array $chat
-     * @return array
-     */
     protected function getDefaultAttributes($chat): array
     {
         $attributes = $chat->getAttributes();
         if ($chat->created_at) {
             $attributes['created_at'] = $this->formatDate($chat->created_at);
+        }
+
+        // 未加入频道 -> can_join = true
+        $actor = $this->actor;
+        if ($actor && (int) ($chat->type ?? 0) === 1) {
+            if (method_exists($chat, 'getChatUser')) {
+                $pivot = $chat->getChatUser($actor);
+                if (!$pivot || $pivot->removed_at) {
+                    $attributes['can_join'] = true;
+                }
+            }
         }
 
         return $attributes;
@@ -63,3 +63,4 @@ class ChatSerializer extends AbstractSerializer
         return $this->hasOne($chat, MessageSerializer::class);
     }
 }
+
