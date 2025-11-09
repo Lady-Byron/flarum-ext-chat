@@ -1,16 +1,14 @@
 // js/src/forum/components/ChatViewport.js
 // [FIX] 1.8 路径 & 导入 app
-// [CHANGED] 全面改为“按 id 比较（字符串化）”，避免“同 id 不同实例”漏配
-// [CHANGED] loadChat(): 基于实际滚动容器计算回滚位置（wrapper / documentElement）
-// [FIX] Loader 读取 this.state.loading（原误读 this.state.scroll.loading）
-// [CHANGED] getChatWrapper(): 优先返回当前实例的 this.wrapperEl，避免全局选择器误配
-// [FIX] 将所有使用 el.offsetHeight / wrapper.offsetHeight 的位置统一改为 clientHeight，
-//      以兼容 document.documentElement 作为滚动容器的场景（移动端 ChatPage）
-// [FIX] wrapperOnBeforeUpdate(): 使用 this.state.scroll.autoScroll（原误用 this.state.autoScroll）
-// [FIX] 小坑 A：checkUnreaded() 查询消息节点限定在当前视口作用域（this.element）
-// [FIX] 小坑 B：scrollToAnchor() 用矩形差计算相对位移，兼容 documentElement/.wrapper
-// [HARDEN] 加固 1：loadChat() 回滚定位加定时器防抖，切会话频繁不叠加
-// [HARDEN] 加固 2：wrapperOnScroll() 缓存本次回调使用的 state，避免切会话竞态
+// [CHANGED] 按 id 比较（字符串化）
+// [CHANGED] loadChat(): 基于实际滚动容器计算回滚位置
+// [FIX] Loader 读取 this.state.loading
+// [CHANGED] getChatWrapper(): 优先返回实例 wrapperEl
+// [FIX] 全部 offsetHeight -> clientHeight
+// [FIX] wrapperOnBeforeUpdate(): 使用 this.state.scroll.autoScroll
+// [FIX] 小坑 A/B：限定作用域与矩形差
+// [HARDEN] 防抖/竞态
+// [ADDED] 频道“未加入”前端拦截：不取历史、不上报已读、不触发滚动加载；顶部显示提示
 
 import app from 'flarum/forum/app';
 import Component from 'flarum/common/Component';
@@ -51,14 +49,34 @@ export default class ChatViewport extends Component {
     }
   }
 
+  // ------- 成员判定（基于 pivot：存在且未 removed_at） -------
+  getMyPivot() {
+    const me = app.session.user;
+    const chatId = this.model?.id?.();
+    return me && me.chat_pivot ? me.chat_pivot(chatId) : null;
+  }
+  isMember() {
+    const p = this.getMyPivot();
+    return !!(p && !p.removed_at?.());
+  }
+  isChannelNonMember() {
+    return this.model?.type?.() === 1 && !this.isMember();
+  }
+
   loadChat() {
     if (!this.state) return;
 
     const oldScroll = Number(this.state.scroll.oldScroll || 0);
+
+    // 未加入频道：不加载历史、不定位
+    if (this.isChannelNonMember()) {
+      this.state.messagesFetched = true; // 防止后续误触发
+      return;
+    }
+
     this.reloadMessages();
     m.redraw();
 
-    // [HARDEN] 防抖，避免频繁切会话导致多次定位叠加
     if (this._loadTimer) clearTimeout(this._loadTimer);
     this._loadTimer = setTimeout(() => {
       const chatWrapper = this.getChatWrapper();
@@ -75,6 +93,7 @@ export default class ChatViewport extends Component {
 
   view() {
     if (this.model) {
+      const notMember = this.isChannelNonMember();
       return (
         <div className="ChatViewport">
           <div
@@ -84,21 +103,33 @@ export default class ChatViewport extends Component {
             onupdate={this.wrapperOnUpdate.bind(this)}
             onremove={this.wrapperOnRemove.bind(this)}
           >
-            {this.componentLoader(this.state?.loading)}
+            {/* 未加入频道时显示一条轻提示（可替换为你现有的空状态组件） */}
+            {notMember ? (
+              <div className="ChatJoinNotice">
+                {app.translator.trans('xelson-chat.forum.chat.join_channel_notice') ||
+                  '加入频道后可查看历史消息'}
+              </div>
+            ) : null}
+
+            {this.componentLoader(this.state?.loading && !notMember)}
             {this.componentsChatMessages(this.model).concat(
-              this.state.input.writingPreview ? this.componentChatMessage(this.state.input.previewModel) : []
+              this.state.input.writingPreview && !notMember
+                ? this.componentChatMessage(this.state.input.previewModel)
+                : []
             )}
           </div>
+
           <ChatInput
             state={this.state}
             model={this.model}
             oninput={() => {
-              if (this.nearBottom() && !this.state.messageEditing) {
+              if (!notMember && this.nearBottom() && !this.state.messageEditing) {
                 this.scrollToBottom();
               }
             }}
           />
-          {this.isFastScrollAvailable() ? this.componentScroller() : null}
+
+          {!notMember && this.isFastScrollAvailable() ? this.componentScroller() : null}
         </div>
       );
     }
@@ -116,8 +147,8 @@ export default class ChatViewport extends Component {
       : <ChatMessage key={model.id()} model={model} />;
   }
 
-  // [CHANGED] 用 id 比较，规避“同 id 不同实例”漏配
   componentsChatMessages(chat) {
+    if (this.isChannelNonMember()) return []; // 未加入频道不显示任何消息
     const chatId = String(chat?.id?.() ?? '');
     return app.chat
       .getChatMessages((mdl) => String(mdl.chat()?.id?.() ?? '') === chatId)
@@ -152,13 +183,14 @@ export default class ChatViewport extends Component {
     if (this.isPhone() && app.current.matches?.(ChatPage)) {
       return document.documentElement;
     }
-    if (this.wrapperEl) return this.wrapperEl; // [CHANGED] 优先当前实例 wrapper
+    if (this.wrapperEl) return this.wrapperEl;
     const wrapper = this.element?.querySelector?.('.wrapper')
       || document.querySelector('.ChatViewport .wrapper');
     return wrapper || null;
   }
 
   isFastScrollAvailable() {
+    if (this.isChannelNonMember()) return false;
     if (!this.state || !this.model) return false;
     const chatWrapper = this.getChatWrapper();
     if (!chatWrapper) return false;
@@ -173,6 +205,7 @@ export default class ChatViewport extends Component {
   }
 
   fastScroll(e) {
+    if (this.isChannelNonMember()) return;
     if (!this.model) return;
     if (this.model.unreaded() >= 30) this.fastMessagesFetch(e);
     else {
@@ -188,6 +221,7 @@ export default class ChatViewport extends Component {
   }
 
   fastMessagesFetch(e) {
+    if (this.isChannelNonMember()) return;
     e.redraw = false;
     app.chat.chatmessages = [];
 
@@ -196,7 +230,6 @@ export default class ChatViewport extends Component {
       timedRedraw(300);
 
       this.model.pushAttributes({ unreaded: 0 });
-      // [CHANGED] 用 id 比较
       const message = app.chat
         .getChatMessages((mdl) => String(mdl.chat()?.id?.() ?? '') === String(this.model?.id?.() ?? ''))
         .slice(-1)[0];
@@ -206,7 +239,7 @@ export default class ChatViewport extends Component {
 
   wrapperOnCreate(vnode) {
     super.oncreate(vnode);
-    this.wrapperEl = vnode.dom;            // [CHANGED]
+    this.wrapperEl = vnode.dom;
     this.wrapperOnUpdate(vnode);
 
     const target = app.current.matches?.(ChatPage) ? window : this.wrapperEl;
@@ -219,8 +252,9 @@ export default class ChatViewport extends Component {
     try {
       super.onbeforeupdate(vnode, vnodeNew);
       if (
+        this.isChannelNonMember() ||
         !this.state ||
-        !this.state.scroll?.autoScroll ||   // [FIX] 使用 this.state.scroll.autoScroll
+        !this.state.scroll?.autoScroll ||
         !this.nearBottom() ||
         !this.state.newPushedPosts
       ) {
@@ -228,7 +262,6 @@ export default class ChatViewport extends Component {
       }
       this.scrollAfterUpdate = true;
     } catch (e) {
-      // eslint-disable-next-line no-console
       console.warn('ChatViewport wrapperOnBeforeUpdate error:', e);
     }
   }
@@ -239,19 +272,18 @@ export default class ChatViewport extends Component {
       const el = this.getChatWrapper();
       if (!el) return;
 
-      if (this.model && this.state && this.state.scroll.autoScroll) {
+      if (!this.isChannelNonMember() && this.model && this.state && this.state.scroll.autoScroll) {
         if (this.autoScrollTimeout) clearTimeout(this.autoScrollTimeout);
         this.autoScrollTimeout = setTimeout(this.scrollToBottom.bind(this, true), 100);
       }
       if (el.scrollTop <= 0) el.scrollTop = 1;
-      this.checkUnreaded();
+      if (!this.isChannelNonMember()) this.checkUnreaded();
 
       if (this.scrollAfterUpdate) {
         this.scrollAfterUpdate = false;
         this.scrollToBottom();
       }
     } catch (e) {
-      // eslint-disable-next-line no-console
       console.warn('ChatViewport wrapperOnUpdate error:', e);
     }
   }
@@ -259,7 +291,6 @@ export default class ChatViewport extends Component {
   wrapperOnRemove(vnode) {
     try {
       super.onremove(vnode);
-      // [HARDEN] 清理 loadChat 防抖定时器
       if (this._loadTimer) { clearTimeout(this._loadTimer); this._loadTimer = null; }
       if (this.boundScrollListener && this.boundScrollTarget) {
         this.boundScrollTarget.removeEventListener('scroll', this.boundScrollListener);
@@ -267,17 +298,17 @@ export default class ChatViewport extends Component {
         this.boundScrollTarget = null;
       }
     } catch (e) {
-      // eslint-disable-next-line no-console
       console.warn('ChatViewport wrapperOnRemove error:', e);
     }
   }
 
   wrapperOnScroll(e) {
+    if (this.isChannelNonMember()) return;
     const el = app.current.matches?.(ChatPage) ? document.documentElement : e.currentTarget;
-    const state = this.state;                         // [HARDEN] 捕获当次回调所用 state
+    const state = this.state;
     if (!el || !state) return;
 
-    state.scroll.oldScroll = el.scrollHeight - el.clientHeight - el.scrollTop; // [FIX] clientHeight
+    state.scroll.oldScroll = el.scrollHeight - el.clientHeight - el.scrollTop;
 
     this.checkUnreaded();
 
@@ -296,14 +327,12 @@ export default class ChatViewport extends Component {
 
     if (!state.messageEditing && el.scrollTop >= 0) {
       if (el.scrollTop <= 500) {
-        // [CHANGED] 用 id 比较
         const topMessage = app.chat
           .getChatMessages((model) => String(model.chat()?.id?.() ?? '') === String(this.model?.id?.() ?? ''))[0];
         if (topMessage && topMessage != this.model.first_message()) {
           app.chat.apiFetchChatMessages(this.model, topMessage.created_at().toISOString());
         }
-      } else if (el.scrollTop + el.clientHeight >= currentHeight - 500) { // [FIX] clientHeight
-        // [CHANGED] 用 id 比较
+      } else if (el.scrollTop + el.clientHeight >= currentHeight - 500) {
         const bottomMessage = app.chat
           .getChatMessages((model) => String(model.chat()?.id?.() ?? '') === String(this.model?.id?.() ?? ''))
           .slice(-1)[0];
@@ -315,9 +344,9 @@ export default class ChatViewport extends Component {
   }
 
   checkUnreaded() {
+    if (this.isChannelNonMember()) return;
     const wrapper = this.getChatWrapper();
     if (wrapper && this.model && this.model.unreaded() && app.chat.chatIsShown()) {
-      // [CHANGED] 用 id 比较 + 仅取未读区间
       const list = app.chat.getChatMessages(
         (mdl) =>
           String(mdl.chat()?.id?.() ?? '') === String(this.model?.id?.() ?? '') &&
@@ -326,12 +355,10 @@ export default class ChatViewport extends Component {
       );
 
       for (const message of list) {
-        // [FIX] 小坑 A：限定作用域在当前视口，避免命中另一个视口
         const scope = this.element || document;
         const msg = scope.querySelector(`.message-wrapper[data-id="${message.id()}"]`);
         if (!msg) continue;
 
-        // [FIX] 小坑 B 同类：用矩形差判断是否进入可视区，兼容 documentElement / .wrapper
         const msgTop = msg.getBoundingClientRect().top;
         const wrapRectTop = wrapper.getBoundingClientRect().top;
         const visibleBottom = wrapRectTop + wrapper.clientHeight;
@@ -353,8 +380,8 @@ export default class ChatViewport extends Component {
     }
   }
 
-  // [FIX] 改为矩形差定位，兼容不同滚动容器
   scrollToAnchor(anchor) {
+    if (this.isChannelNonMember()) return;
     let element;
     if (anchor instanceof Message) {
       const jq = this.$ ? this.$(`.message-wrapper[data-id="${anchor.id()}"]`) : null;
@@ -379,6 +406,7 @@ export default class ChatViewport extends Component {
   }
 
   scrollToBottom(force = false) {
+    if (this.isChannelNonMember()) return;
     this.scrolling = true;
     const chatWrapper = this.getChatWrapper();
     if (chatWrapper) {
@@ -411,6 +439,13 @@ export default class ChatViewport extends Component {
   }
 
   reloadMessages() {
+    if (!this.state) return;
+    if (this.isChannelNonMember()) {
+      // 不加载任何历史，保持 viewport 为空
+      this.state.messagesFetched = true;
+      return;
+    }
+
     if (!this.state.messagesFetched) {
       let query;
       if (this.model.unreaded()) {
@@ -420,13 +455,12 @@ export default class ChatViewport extends Component {
 
       app.chat.apiFetchChatMessages(this.model, query).then(() => {
         if (this.model.unreaded()) {
-          // [CHANGED] 用 id 比较
           const anchor = app.chat.getChatMessages(
             (mdl) =>
               String(mdl.chat()?.id?.() ?? '') === String(this.model?.id?.() ?? '') &&
               mdl.created_at() > this.model.readed_at()
           )[0];
-          this.scrollToAnchor(anchor);
+        this.scrollToAnchor(anchor);
         } else this.state.scroll.autoScroll = true;
 
         m.redraw();
