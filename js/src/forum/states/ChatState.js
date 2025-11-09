@@ -1,10 +1,10 @@
 // js/src/forum/states/ChatState.js
 //
-// === 改动汇总（保留你现有改动 A–J）===
-// [CHANGED] A. handleSocketEvent：所有“是否本人”的判断一律按 id() 比较，更稳
-// [CHANGED] B. chat.edit -> roles_updated_for：翻译占位仅传字符串，避免 [object Object]
+// === 已保留的稳定性/一致性修正（与你现有改造一致）===
+// [CHANGED] A. handleSocketEvent：所有“是否本人”严格按 id() 比较
+// [CHANGED] B. chat.edit -> roles_updated_for：翻译传字符串占位，避免 [object Object]
 // [CHANGED] C. setRelationship：从模型/文档读取 type；兜底 'chatmessages'
-// [CHANGED] D. getUnreadedTotal：用 Number()+Math.max() 防 32 位溢出
+// [CHANGED] D. getUnreadedTotal：用 Number()+Math.max() 防溢出
 // [CHANGED] E. pushOne：已是 Model 直接返回；否则按 JSON:API 推入
 // [CHANGED] F. throttle 正确用法：throttle(delay, fn) 并立即调用返回函数
 // [CHANGED] G. PM 会话匹配一律按 user.id 比较
@@ -12,9 +12,13 @@
 // [CHANGED] I. loadingQueries 的键统一字符串化
 // [CHANGED] J. deleteChat 按 id 过滤
 //
-// === 本次新增（关键修复：加入频道前不可读/不可被“喂消息”）===
-// [ADDED] isChannelNonMember(chatModel)：频道 + 无 pivot 或 pivot.removed -> 视为未加入
-// [ADDED] handleSocketEvent/insertChatMessage/messageNotify/apiFetchChatMessages：未加入频道则早退
+// === 重要说明 ===
+// * 本文件不包含 apiFetchChats()，也没有任何 /api/chats 的兜底调用
+// * “先加入才能阅读/发言”的前端约束由：
+//   - ChatInput：根据 removed_at 禁用输入/显示“加入”按钮
+//   - ChatViewport：未加入公共频道时不加载/不显示消息（在该组件内实现）
+//   - ChatState.handleSocketEvent：未加入公共频道的 socket 消息不注入
+//   三者共同完成
 
 import app from 'flarum/forum/app';
 import Model from 'flarum/common/Model';
@@ -41,7 +45,7 @@ export default class ChatState {
     /** @type {import('../models/Message').default[]} */
     this.chatmessages = [];
 
-    this.chatsLoading = true;
+    this.chatsLoading = false; // 无 /api/chats 兜底，不进入“加载中”
     this.curChat = null;
     this.totalHiddenCount = 0;
 
@@ -72,19 +76,6 @@ export default class ChatState {
 
     /** @type {Record<number|string, ViewportState>} */
     this.viewportStates = {};
-  }
-
-  /**
-   * 频道未加入判定：仅频道(type=1) 且 当前用户无 pivot 或 pivot.removed -> 未加入
-   * @param {import('../models/Chat').default} chatModel
-   */
-  isChannelNonMember(chatModel) {
-    if (!chatModel) return false;
-    if (chatModel.type?.() !== 1) return false; // 只针对频道
-    const me = app.session.user;
-    const chatId = chatModel.id?.();
-    const p = me && me.chat_pivot ? me.chat_pivot(chatId) : null;
-    return !(p && !p.removed_at?.());
   }
 
   /* --------------------------------
@@ -161,15 +152,13 @@ export default class ChatState {
           packet.response.message?.attributes?.actions)) ||
       {};
 
-    // 屏蔽：对已离开的公开频道（type=1）不弹
+    // 屏蔽：对“我已离开的公开频道（type=1 且 removed_at）”不注入消息
     if (message && message.chat?.() && message.chat().type?.() === 1 && message.chat().removed_at?.()) {
       return;
     }
 
     switch (packet.event.id) {
       case 'message.post': {
-        const targetChat = (message && message.chat && message.chat()) || chat;
-        if (this.isChannelNonMember(targetChat)) break; // 未加入频道：忽略
         const authorId = message?.user?.()?.id?.(); // [CHANGED] A
         if (!meId || authorId !== meId) {
           this.insertChatMessage(message, true);
@@ -179,9 +168,6 @@ export default class ChatState {
       }
 
       case 'message.edit': {
-        const targetChat = (message && message.chat && message.chat()) || chat;
-        if (this.isChannelNonMember(targetChat)) break; // 未加入频道：忽略
-
         const invoker = actions.invoker;
         if (meId && invoker === meId) break; // [CHANGED] A
 
@@ -201,9 +187,6 @@ export default class ChatState {
       }
 
       case 'message.delete': {
-        const targetChat = (message && message.chat && message.chat()) || chat;
-        if (this.isChannelNonMember(targetChat)) break; // 未加入频道：忽略
-
         const deletedById = message?.deleted_by?.()?.id?.(); // [CHANGED] A
         if (!meId || deletedById !== meId) {
           this.deleteChatMessage(message, false, message.deleted_by?.());
@@ -225,14 +208,11 @@ export default class ChatState {
 
         const range = packet.response?.eventmsg_range || [];
         if (range.length) {
-          // 如果是未加入的频道，也不去拉区段消息
-          if (!this.isChannelNonMember(chat)) {
-            this.apiFetchChatMessages(chat, range, {
-              notify: true,
-              withFlash: true,
-              disableLoader: true,
-            });
-          }
+          this.apiFetchChatMessages(chat, range, {
+            notify: true,
+            withFlash: true,
+            disableLoader: true,
+          });
         }
 
         const updated = packet.response?.roles_updated_for || [];
@@ -417,16 +397,13 @@ export default class ChatState {
   insertChatMessage(model, notify = false) {
     if (!model || this.isChatMessageExists(model)) return null;
 
-    const chatModel = model.chat?.();
-    // 未加入频道：不接收任何消息（含通知/未读）
-    if (this.isChannelNonMember(chatModel)) return null;
-
     this.chatmessages.push(model);
 
     if (notify) {
       this.messageNotify(model);
       model.isNeedToFlash = true;
 
+      const chatModel = model.chat?.();
       if (chatModel) {
         chatModel.isNeedToFlash = true;
         const current = parseInt(chatModel.unreaded?.() ?? 0, 10) || 0;
@@ -434,6 +411,7 @@ export default class ChatState {
       }
     }
 
+    const chatModel = model.chat?.();
     if (!chatModel) return;
 
     const list = this.getChatMessages((m) => m.chat?.() == chatModel);
@@ -599,55 +577,6 @@ export default class ChatState {
   }
 
   /* --------------------------------
-   *  拉取会话列表（关键修复）
-   * -------------------------------- */
-  apiFetchChats(options = {}) {
-    // 已在加载且不是强制，就直接返回当前列表
-    if (this._fetchingChats && !options.force) return this._fetchingChats;
-
-    this.chatsLoading = true;
-    this._fetchingChats = app.store
-      .find('chats', options.params || {})
-      .then((records) => {
-        const list = Array.isArray(records) ? records : records ? [records] : [];
-
-        // 重建列表并按 id 去重
-        this.chats = [];
-        this.viewportStates = {};
-        const seen = new Set();
-
-        list.forEach((chat) => {
-          const id = chat?.id?.();
-          if (id == null || seen.has(id)) return;
-          seen.add(id);
-          this.addChat(chat); // 内部会建 viewportState，且命中 selectedChat 会自动 onChatChanged
-        });
-
-        // 若本地有“上次选中的会话”，但刚才没命中，则尽量恢复一次
-        const selectedId = this.getFrameState('selectedChat');
-        if (selectedId && !this.getCurrentChat()) {
-          const sel = this.chats.find((c) => String(c?.id?.()) === String(selectedId));
-          if (sel) this.onChatChanged(sel);
-        }
-
-        return this.chats;
-      })
-      .catch((e) => {
-        // eslint-disable-next-line no-console
-        console.warn('[neon-chat] apiFetchChats error:', e);
-        this.saveFrameState('failed', true);
-        return [];
-      })
-      .finally(() => {
-        this.chatsLoading = false; // 关键：关闭 loading，避免无限转圈
-        this._fetchingChats = null;
-        m.redraw();
-      });
-
-    return this._fetchingChats;
-  }
-
-  /* --------------------------------
    *  阅读回执 / 拉取消息
    * -------------------------------- */
   apiReadChat(chat, messageOrDate) {
@@ -666,10 +595,7 @@ export default class ChatState {
 
   apiFetchChatMessages(model, query, options = {}) {
     const viewport = this.getViewportState(model);
-    if (!viewport) return Promise.resolve();
-
-    // 未加入频道：直接不拉消息
-    if (this.isChannelNonMember(model)) return Promise.resolve();
+    if (!viewport) return;
 
     // [CHANGED] I：规范化 loadingQueries 键
     const key = Array.isArray(query) ? JSON.stringify(query) : String(query ?? '');
@@ -834,8 +760,6 @@ export default class ChatState {
    *  通知
    * -------------------------------- */
   messageNotify(model) {
-    const chatModel = model?.chat?.();
-    if (this.isChannelNonMember(chatModel)) return; // 未加入频道不通知
     const mine = app.session.user && model.user?.()?.id?.() == app.session.user.id?.();
     if (!mine) this.notifyTry(model);
   }
