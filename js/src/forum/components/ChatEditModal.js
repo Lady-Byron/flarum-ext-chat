@@ -1,9 +1,10 @@
 // js/src/forum/components/ChatEditModal.js
-// [FIX] “是否已加入”的判定一律以 pivot 是否存在且未 removed 为准
-// [FIX] 所有 chat_pivot(...) 均做空值守护，避免“未加入无 pivot”时报错
-// [FIX] 踢人/设管等权限计算基于 pivot?.role()，缺省为 0
-// [FIX] ButtonLeave 文案：未加入 => “加入聊天”，已加入 => “退出聊天”
-// 其它维持你现有 1.8 兼容改造
+// [FIXES SUMMARY]
+// - 成员“下拉菜单全体同时展开” -> 仅当前这一条展开：
+//   1) 在 oncreate 中注册捕获级 click 监听，只接管 `.Button--mention-edit`，
+//      只切换“最近的 .Dropdown”，并关闭同一 Modal 里的其它已打开下拉；
+//   2) 在 Dropdown 根上阻止冒泡，避免外层误触发。
+// - 其它你已有的 1.8 兼容与空值守护保持不变。
 
 import app from 'flarum/forum/app';
 import Button from 'flarum/common/components/Button';
@@ -21,7 +22,7 @@ export default class ChatEditModal extends ChatModal {
 
     this.getInput().title = Stream(this.model.title());
     this.getInput().color = Stream(this.model.color());
-    this.getInput().icon  = Stream(this.model.icon());
+    this.getInput().icon = Stream(this.model.icon());
 
     this.deleteChatTitleInput = Stream('');
     this.deleteState = 0;
@@ -46,6 +47,44 @@ export default class ChatEditModal extends ChatModal {
     this.isLocalModerator = this.isModer(me);
   }
 
+  oncreate(vnode) {
+    super.oncreate(vnode);
+
+    // === 修复：拦截成员下拉按钮，只切换“当前这一条” ===
+    this.__dropdownFixHandler = (e) => {
+      const btn = e.target && e.target.closest('.Button--mention-edit');
+      if (!btn || !btn.isConnected) return;
+
+      // 仅当前这一条
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.stopImmediatePropagation) e.stopImmediatePropagation();
+
+      const modal = btn.closest('.Modal') || document;
+      const currentDropdown = btn.closest('.Dropdown');
+
+      // 关闭同一 Modal 内其它已打开的下拉
+      modal.querySelectorAll('.Dropdown.open').forEach((d) => {
+        if (d !== currentDropdown) d.classList.remove('open');
+      });
+
+      // 切换“当前这一条”
+      if (currentDropdown) currentDropdown.classList.toggle('open');
+    };
+
+    // 捕获阶段抢先处理，避免外层监听误触发
+    document.addEventListener('click', this.__dropdownFixHandler, true);
+  }
+
+  onremove() {
+    // 卸载监听，防止内存泄漏
+    if (this.__dropdownFixHandler) {
+      document.removeEventListener('click', this.__dropdownFixHandler, true);
+      this.__dropdownFixHandler = null;
+    }
+    super.onremove();
+  }
+
   // 工具：列表里是否有同 id 用户
   listHasUserById(list, user) {
     if (!user) return false;
@@ -58,16 +97,23 @@ export default class ChatEditModal extends ChatModal {
   }
 
   onsubmit() {
-    const byId = (arr) => arr.map((mdl) => (mdl ? Model.getIdentifier(mdl) : null)).filter(Boolean);
+    const byId = (arr) =>
+      arr.map((mdl) => (mdl ? Model.getIdentifier(mdl) : null)).filter(Boolean);
 
-    const added   = byId(this.getSelectedUsers().filter((u) => !this.listHasUserById(this.initialUsers, u)));
-    const removed = byId(this.initialUsers.filter((u) => !this.listHasUserById(this.getSelectedUsers(), u)));
-    const edited  = Object.keys(this.edited).map((k) => (this.edited[k] = { id: k, ...this.edited[k] }));
+    const added = byId(
+      this.getSelectedUsers().filter((u) => !this.listHasUserById(this.initialUsers, u))
+    );
+    const removed = byId(
+      this.initialUsers.filter((u) => !this.listHasUserById(this.getSelectedUsers(), u))
+    );
+    const edited = Object.keys(this.edited).map(
+      (k) => (this.edited[k] = { id: k, ...this.edited[k] })
+    );
 
     this.model.save({
       title: this.getInput().title(),
       color: this.getInput().color(),
-      icon : this.getInput().icon(),
+      icon: this.getInput().icon(),
       users: { added, removed, edited },
       relationships: { users: this.getSelectedUsers() },
     });
@@ -86,7 +132,7 @@ export default class ChatEditModal extends ChatModal {
     if (typeof override === 'number') return override;
 
     const p = user.chat_pivot && user.chat_pivot(this.model.id?.());
-    return p && p.role ? (p.role() || 0) : 0;
+    return p && p.role ? p.role() || 0 : 0;
   }
 
   isModer(user) {
@@ -107,7 +153,11 @@ export default class ChatEditModal extends ChatModal {
   }
 
   userMentionClassname(user) {
-    return classList({ editable: true, moder: this.isModer(user), creator: this.isCreator(user) });
+    return classList({
+      editable: true,
+      moder: this.isModer(user),
+      creator: this.isCreator(user),
+    });
   }
 
   userMentionDropdownOnclick(user, button) {
@@ -118,7 +168,9 @@ export default class ChatEditModal extends ChatModal {
         break;
       }
       case 'kick': {
-        const idx = this.getSelectedUsers().findIndex((u) => u && u.id && u.id() === user.id?.());
+        const idx = this.getSelectedUsers().findIndex(
+          (u) => u && u.id && u.id() === user.id?.()
+        );
         if (idx >= 0) this.getSelectedUsers().splice(idx, 1);
         break;
       }
@@ -136,6 +188,8 @@ export default class ChatEditModal extends ChatModal {
 
     return (
       <Dropdown
+        // 阻止事件冒泡，避免外层监听误触发
+        onclick={(e) => e.stopPropagation()}
         buttonClassName="Button Button--icon Button--flat Button--mention-edit"
         menuClassName="Dropdown-menu--top Dropdown-menu--bottom Dropdown-menu--left Dropdown-menu--right"
         icon="fas fa-chevron-down"
@@ -159,22 +213,38 @@ export default class ChatEditModal extends ChatModal {
   }
 
   userMentionContent(user) {
-    return [
-      '@' + user.displayName(),
-      this.isLocalModerator && !app.chat.isChatPM(this.model)
-        ? this.componentUserMentionDropdown(user)
-        : null,
-    ];
+    // 包一层容器，未来若需要“点整块可开”时，可在此容器上精确定向
+    return (
+      <span className="UserMentionItem">
+        {'@' + user.displayName()}
+        {this.isLocalModerator && !app.chat.isChatPM(this.model)
+          ? this.componentUserMentionDropdown(user)
+          : null}
+      </span>
+    );
   }
 
+  // 若外部仍有“整块点击打开下拉”的历史代码，请确保它调用的是本方法，
+  // 且仅作用于当前这一条（此处已经避免全局触发）。
   userMentionOnClick(user, e) {
-    this.$(e.target).find('.Dropdown').trigger('shown.bs.dropdown');
+    e.stopPropagation();
+    const root = e.currentTarget || e.target.closest('.UserMentionItem') || e.target;
+    const btn = root && root.querySelector('.Button--mention-edit');
+    if (!btn) return;
+
+    const modal = btn.closest('.Modal') || document;
+    const currentDropdown = btn.closest('.Dropdown');
+
+    modal.querySelectorAll('.Dropdown.open').forEach((d) => {
+      if (d !== currentDropdown) d.classList.remove('open');
+    });
+    if (currentDropdown) currentDropdown.classList.toggle('open');
   }
 
   componentFormInputIcon() {
     return this.componentFormIcon({
       title: app.translator.trans('xelson-chat.forum.chat.edit_modal.form.icon.label'),
-      desc : app.translator.trans('xelson-chat.forum.chat.edit_modal.form.icon.validator', {
+      desc: app.translator.trans('xelson-chat.forum.chat.edit_modal.form.icon.validator', {
         a: (
           <a
             href="https://fontawesome.com/icons?m=free"
@@ -192,7 +262,7 @@ export default class ChatEditModal extends ChatModal {
   componentFormInputTitle() {
     return this.componentFormInput({
       title: app.translator.trans('xelson-chat.forum.chat.edit_modal.form.title.label'),
-      desc : app.translator.trans('xelson-chat.forum.chat.edit_modal.form.title.validator'),
+      desc: app.translator.trans('xelson-chat.forum.chat.edit_modal.form.title.validator'),
       stream: this.getInput().title,
       placeholder: app.translator.trans('xelson-chat.forum.chat.edit_modal.form.title.label'),
     });
@@ -201,22 +271,41 @@ export default class ChatEditModal extends ChatModal {
   componentFormInputColor() {
     return this.componentFormColor({
       title: app.translator.trans('xelson-chat.forum.chat.edit_modal.form.color.label'),
-      desc : app.translator.trans('xelson-chat.forum.chat.edit_modal.form.color.validator'),
+      desc: app.translator.trans('xelson-chat.forum.chat.edit_modal.form.color.validator'),
       stream: this.getInput().color,
       placeholder: app.translator.trans('xelson-chat.forum.chat.edit_modal.form.color.label'),
     });
   }
 
   componentChatInfo() {
-    return [
-      <label><h2>{this.model.title()}</h2></label>,
-      this.componentUsersMentions(),
-    ];
+    return [<label><h2>{this.model.title()}</h2></label>, this.componentUsersMentions()];
   }
 
-  componentFormPM()       { return this.componentChatInfo(); }
-  componentFormChannel()  { return this.isLocalModerator ? [ this.componentFormInputTitle(), this.componentFormInputColor(), this.componentFormInputIcon(), this.componentFormUsersSelect('xelson-chat.forum.chat.edit_modal.form.users.edit') ] : this.componentChatInfo(); }
-  componentFormChat()     { return this.isLocalModerator ? [ this.componentFormInputTitle(), this.componentFormInputColor(), this.componentFormInputIcon(), this.componentFormUsersSelect() ] : this.componentChatInfo(); }
+  componentFormPM() {
+    return this.componentChatInfo();
+  }
+  componentFormChannel() {
+    return this.isLocalModerator
+      ? [
+          this.componentFormInputTitle(),
+          this.componentFormInputColor(),
+          this.componentFormInputIcon(),
+          this.componentFormUsersSelect(
+            'xelson-chat.forum.chat.edit_modal.form.users.edit'
+          ),
+        ]
+      : this.componentChatInfo();
+  }
+  componentFormChat() {
+    return this.isLocalModerator
+      ? [
+          this.componentFormInputTitle(),
+          this.componentFormInputColor(),
+          this.componentFormInputIcon(),
+          this.componentFormUsersSelect(),
+        ]
+      : this.componentChatInfo();
+  }
 
   componentForm() {
     if (this.model.type?.()) return this.componentFormChannel();
@@ -283,8 +372,12 @@ export default class ChatEditModal extends ChatModal {
     this.hide();
   }
 
-  isCanEditChannel() { return this.getInput().title()?.length; }
-  isCanEditChat()    { return !this.alertText(); }
+  isCanEditChannel() {
+    return this.getInput().title()?.length;
+  }
+  isCanEditChat() {
+    return !this.alertText();
+  }
 
   componentDeleteChat() {
     return [
@@ -293,8 +386,10 @@ export default class ChatEditModal extends ChatModal {
             <br />,
             this.componentFormInput({
               title: app.translator.trans('xelson-chat.forum.chat.edit_modal.form.delete.title'),
-              desc : app.translator.trans('xelson-chat.forum.chat.edit_modal.form.delete.desc'),
-              placeholder: app.translator.trans('xelson-chat.forum.chat.edit_modal.form.delete.placeholder'),
+              desc: app.translator.trans('xelson-chat.forum.chat.edit_modal.form.delete.desc'),
+              placeholder: app.translator.trans(
+                'xelson-chat.forum.chat.edit_modal.form.delete.placeholder'
+              ),
               stream: this.deleteChatTitleInput,
             }),
           ]
@@ -309,11 +404,15 @@ export default class ChatEditModal extends ChatModal {
     ];
   }
 
-  isValidTitleCopy() { return this.deleteChatTitleInput() == this.model.title(); }
+  isValidTitleCopy() {
+    return this.deleteChatTitleInput() == this.model.title();
+  }
 
   ondelete() {
     switch (this.deleteState) {
-      case 0: this.deleteState = 1; break;
+      case 0:
+        this.deleteState = 1;
+        break;
       case 1:
         if (this.isValidTitleCopy()) {
           app.chat.deleteChat(this.model);
