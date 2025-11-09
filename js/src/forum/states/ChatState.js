@@ -1,10 +1,10 @@
 // js/src/forum/states/ChatState.js
 //
-// === 已保留的稳定性/一致性修正（与你现有改造一致）===
-// [CHANGED] A. handleSocketEvent：所有“是否本人”严格按 id() 比较
-// [CHANGED] B. chat.edit -> roles_updated_for：翻译传字符串占位，避免 [object Object]
+// === 改动汇总（保留你现有改动 A–J）===
+// [CHANGED] A. handleSocketEvent：所有“是否本人”的判断一律按 id() 比较，更稳
+// [CHANGED] B. chat.edit -> roles_updated_for：翻译占位仅传字符串，避免 [object Object]
 // [CHANGED] C. setRelationship：从模型/文档读取 type；兜底 'chatmessages'
-// [CHANGED] D. getUnreadedTotal：用 Number()+Math.max() 防溢出
+// [CHANGED] D. getUnreadedTotal：用 Number()+Math.max() 防 32 位溢出
 // [CHANGED] E. pushOne：已是 Model 直接返回；否则按 JSON:API 推入
 // [CHANGED] F. throttle 正确用法：throttle(delay, fn) 并立即调用返回函数
 // [CHANGED] G. PM 会话匹配一律按 user.id 比较
@@ -12,13 +12,9 @@
 // [CHANGED] I. loadingQueries 的键统一字符串化
 // [CHANGED] J. deleteChat 按 id 过滤
 //
-// === 重要说明 ===
-// * 本文件不包含 apiFetchChats()，也没有任何 /api/chats 的兜底调用
-// * “先加入才能阅读/发言”的前端约束由：
-//   - ChatInput：根据 removed_at 禁用输入/显示“加入”按钮
-//   - ChatViewport：未加入公共频道时不加载/不显示消息（在该组件内实现）
-//   - ChatState.handleSocketEvent：未加入公共频道的 socket 消息不注入
-//   三者共同完成
+// === 本次新增（关键修复）===
+// [ADDED] apiFetchChats：拉取会话列表；无论成功失败都关闭 chatsLoading；按 id 去重并恢复上次选中
+// [FIX]   renderChatMessage 的“提及修复”改为原生 <a> 替换，避免在 Mithril 子树内再次 m.render 造成 NotFoundError
 
 import app from 'flarum/forum/app';
 import Model from 'flarum/common/Model';
@@ -45,7 +41,7 @@ export default class ChatState {
     /** @type {import('../models/Message').default[]} */
     this.chatmessages = [];
 
-    this.chatsLoading = false; // 无 /api/chats 兜底，不进入“加载中”
+    this.chatsLoading = true;
     this.curChat = null;
     this.totalHiddenCount = 0;
 
@@ -152,7 +148,7 @@ export default class ChatState {
           packet.response.message?.attributes?.actions)) ||
       {};
 
-    // 屏蔽：对“我已离开的公开频道（type=1 且 removed_at）”不注入消息
+    // 屏蔽：对已离开的公开频道（type=1）不弹
     if (message && message.chat?.() && message.chat().type?.() === 1 && message.chat().removed_at?.()) {
       return;
     }
@@ -574,6 +570,55 @@ export default class ChatState {
       element.appendChild(label);
       element.appendChild(audioEl);
     });
+  }
+
+  /* --------------------------------
+   *  拉取会话列表（关键修复）
+   * -------------------------------- */
+  apiFetchChats(options = {}) {
+    // 已在加载且不是强制，就直接返回当前列表
+    if (this._fetchingChats && !options.force) return this._fetchingChats;
+
+    this.chatsLoading = true;
+    this._fetchingChats = app.store
+      .find('chats', options.params || {})
+      .then((records) => {
+        const list = Array.isArray(records) ? records : records ? [records] : [];
+
+        // 重建列表并按 id 去重
+        this.chats = [];
+        this.viewportStates = {};
+        const seen = new Set();
+
+        list.forEach((chat) => {
+          const id = chat?.id?.();
+          if (id == null || seen.has(id)) return;
+          seen.add(id);
+          this.addChat(chat); // 内部会建 viewportState，且命中 selectedChat 会自动 onChatChanged
+        });
+
+        // 若本地有“上次选中的会话”，但刚才没命中，则尽量恢复一次
+        const selectedId = this.getFrameState('selectedChat');
+        if (selectedId && !this.getCurrentChat()) {
+          const sel = this.chats.find((c) => String(c?.id?.()) === String(selectedId));
+          if (sel) this.onChatChanged(sel);
+        }
+
+        return this.chats;
+      })
+      .catch((e) => {
+        // eslint-disable-next-line no-console
+        console.warn('[neon-chat] apiFetchChats error:', e);
+        this.saveFrameState('failed', true);
+        return [];
+      })
+      .finally(() => {
+        this.chatsLoading = false; // 关键：关闭 loading，避免无限转圈
+        this._fetchingChats = null;
+        m.redraw();
+      });
+
+    return this._fetchingChats;
   }
 
   /* --------------------------------
