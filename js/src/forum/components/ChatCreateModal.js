@@ -41,7 +41,7 @@ export default class ChatCreateModal extends ChatModal {
     this.createNewChat(selected);
   }
 
-  // 复归：只发 attributes.users.added = [id]
+  // 复归：只发 users.added = [meId]
   rejoinExistingChat(existingChat) {
     const meId = app.session.user?.id?.();
     if (!meId) return;
@@ -69,7 +69,7 @@ export default class ChatCreateModal extends ChatModal {
     this.hide();
   }
 
-  // 新建会话：修正为 relationships.users.data（JSON:API），且不包含自己
+  // 新建：正确打包 save(...) 的数据（不再嵌套 attributes:{}）
   createNewChat(passedSelected) {
     const meId = String(app.session.user?.id?.() ?? '');
     const rawTitle = (this.getInput().title() || '').trim();
@@ -78,57 +78,53 @@ export default class ChatCreateModal extends ChatModal {
 
     const selected = (passedSelected ?? this.getSelectedUsers() ?? []).filter(Boolean);
 
-    // 参与者 id（去重 + 过滤自己）
-    const selectedIds = Array.from(
-      new Set(
-        selected
-          .map((u) => (u ? String(typeof u.id === 'function' ? u.id() : u.id) : null))
-          .filter((id) => id && id !== meId)
-      )
-    );
+    // 过滤掉自己，仅保留对方（/对方们）的 User Model
+    const selectedModels = selected.filter((u) => String(u?.id?.()) !== meId);
 
-    // 校验（按钮层面已限制，这里二次兜底）
+    // —— 标题策略 ——
+    // 频道：必须有标题
+    // 多人群聊：必须有标题
+    // 一对一私聊：若未填标题，自动用对方用户名
+    let title = rawTitle;
     if (this.isChannel) {
-      if (!rawTitle.length) {
+      if (!title.length) {
         app.alerts.show({ type: 'error' }, app.translator.trans('xelson-chat.forum.chat.list.add_modal.form.title.validator'));
         return;
       }
     } else {
-      if (selectedIds.length === 0) {
+      if (selectedModels.length === 0) {
         app.alerts.show({ type: 'error' }, app.translator.trans('xelson-chat.forum.chat.create.failed'));
         return;
       }
-      if (selectedIds.length > 1 && !rawTitle.length) {
+      if (selectedModels.length > 1 && !title.length) {
         app.alerts.show({ type: 'error' }, app.translator.trans('xelson-chat.forum.chat.list.add_modal.form.title.validator'));
         return;
       }
+      if (selectedModels.length === 1 && !title.length) {
+        const other = selectedModels[0];
+        title = (other?.username?.() || '').trim();
+      }
     }
 
-    // attributes
-    const attributes = {
+    // 直接传属性键（不要再包 attributes:{}）
+    /** @type {any} */
+    const saveData = {
       isChannel: !!this.isChannel,
     };
-    if (rawTitle.length) attributes.title = rawTitle;
-    if (rawIcon.length)  attributes.icon = rawIcon;
-    if (rawColor.length) attributes.color = rawColor;
+    if (title && title.length) saveData.title = title;
+    if (rawIcon.length)        saveData.icon  = rawIcon;
+    if (rawColor.length)       saveData.color = rawColor;
 
-    // relationships（仅在非频道时需要传参与者；频道由后端只加创建者）
-    const relationships =
-      !attributes.isChannel && selectedIds.length
-        ? {
-            users: {
-              data: selectedIds.map((id) => ({ type: 'users', id })),
-            },
-          }
-        : undefined;
-
-    // 通过 createRecord.save({ attributes, relationships }) 让 Flarum 前端包装为 JSON:API
-    const payload = { attributes };
-    if (relationships) payload.relationships = relationships;
+    // relationships：直接传 User Model 数组，Flarum 会自动序列化为 JSON:API
+    if (!saveData.isChannel && selectedModels.length) {
+      saveData.relationships = {
+        users: selectedModels,
+      };
+    }
 
     app.store
       .createRecord('chats')
-      .save(payload)
+      .save(saveData)
       .then((model) => {
         app.chat.addChat(model);
         app.chat.onChatChanged(model);
@@ -204,7 +200,7 @@ export default class ChatCreateModal extends ChatModal {
   isCanCreateChat() {
     const selected = (this.getSelectedUsers() || []).filter(Boolean);
     if (selected.length > 1 && !(this.getInput().title() || '').length) return false; // 多人群聊必须有标题
-    if (!selected.length) return false; // 至少选择 1 人（单聊可无标题）
+    if (!selected.length) return false; // 至少选择 1 人（单聊可无手输标题）
     if (this.alertText()) return false;
     return true;
   }
