@@ -3,6 +3,7 @@
 // [FIX] 所有 chat_pivot(...) 均做空值守护，避免“未加入无 pivot”时报错
 // [FIX] 踢人/设管等权限计算基于 pivot?.role()，缺省为 0
 // [FIX] ButtonLeave 文案：未加入 => “加入聊天”，已加入 => “退出聊天”
+// [ADDED] 加入/退出成功后刷新视口与消息拉取（refreshAfterMembershipChange）
 // 其它维持你现有 1.8 兼容改造
 
 import app from 'flarum/forum/app';
@@ -26,7 +27,7 @@ export default class ChatEditModal extends ChatModal {
     this.deleteChatTitleInput = Stream('');
     this.deleteState = 0;
 
-    const chatId = this.model.id();
+    const chatId = this.model.id?.();
 
     // 仅把“有 pivot 且未 removed”的用户视为当前成员
     const alive = (u) => {
@@ -34,8 +35,8 @@ export default class ChatEditModal extends ChatModal {
       return !!(p && !p.removed_at?.());
     };
 
-    this.initialUsers = (this.model.users() || []).filter(alive);
-    this.setSelectedUsers((this.model.users() || []).filter(alive));
+    this.initialUsers = (this.model.users?.() || []).filter(alive);
+    this.setSelectedUsers((this.model.users?.() || []).filter(alive));
     this.edited = {};
 
     // 我是否已加入：pivot 存在 且 未 removed
@@ -258,6 +259,28 @@ export default class ChatEditModal extends ChatModal {
     return buttons;
   }
 
+  // 加入/退出后刷新：重置视口，触发消息拉取
+  refreshAfterMembershipChange(joined) {
+    const vp = app.chat.getViewportState(this.model);
+    if (vp) {
+      vp.messagesFetched = false;
+      vp.loading = false;
+      vp.loadingQueries = {};
+      vp.newPushedPosts = false;
+    }
+    if (joined) {
+      // 刚加入频道：立即拉一次消息并滚到底
+      app.chat.apiFetchChatMessages(this.model).then(() => {
+        const viewportCmp = app.chat && app.chat.getViewportState(this.model);
+        if (viewportCmp) viewportCmp.scroll = viewportCmp.scroll || {};
+        m.redraw();
+      });
+    } else {
+      // 刚退出：可选择清空当前已缓存消息（按需）
+      // app.chat.chatmessages = app.chat.chatmessages.filter(m => m.chat?.() !== this.model);
+    }
+  }
+
   onleave() {
     const me = app.session.user;
     if (!me) return;
@@ -269,7 +292,10 @@ export default class ChatEditModal extends ChatModal {
           users: { removed: [Model.getIdentifier(me)] },
           relationships: { users: this.getSelectedUsers() },
         })
-        .then(() => m.redraw());
+        .then(() => {
+          this.refreshAfterMembershipChange(false);
+          m.redraw();
+        });
     } else {
       // 未加入 -> 加入
       this.getSelectedUsers().push(me);
@@ -278,12 +304,15 @@ export default class ChatEditModal extends ChatModal {
           users: { added: [Model.getIdentifier(me)] },
           relationships: { users: this.getSelectedUsers() },
         })
-        .then(() => m.redraw());
+        .then(() => {
+          this.refreshAfterMembershipChange(true);
+          m.redraw();
+        });
     }
     this.hide();
   }
 
-  isCanEditChannel() { return this.getInput().title()?.length; }
+  isCanEditChannel() { return !!(this.getInput().title()?.length); }
   isCanEditChat()    { return !this.alertText(); }
 
   componentDeleteChat() {
