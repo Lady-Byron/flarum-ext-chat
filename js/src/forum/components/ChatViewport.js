@@ -12,6 +12,7 @@
 // [HARDEN] 加固 1：loadChat() 回滚定位加定时器防抖，切会话频繁不叠加
 // [HARDEN] 加固 2：wrapperOnScroll() 缓存本次回调使用的 state，避免切会话竞态
 // [FIX] 必改：scrollToBottom 提前 return 时复位 this.scrolling，避免卡死
+// [FIX] Mithril keys：为 Loader 添加稳定 key，并以数组形式组装 children，避免“键混用”错误
 
 import app from 'flarum/forum/app';
 import Component from 'flarum/common/Component';
@@ -76,6 +77,12 @@ export default class ChatViewport extends Component {
 
   view() {
     if (this.model) {
+      // [FIX] children 显式组装为数组（loader + 消息），确保同层级 keyed children 一致
+      const children = [
+        this.componentLoader(this.state?.loading),
+        ...this.componentsChatMessages(this.model),
+      ];
+
       return (
         <div className="ChatViewport">
           <div
@@ -85,8 +92,7 @@ export default class ChatViewport extends Component {
             onupdate={this.wrapperOnUpdate.bind(this)}
             onremove={this.wrapperOnRemove.bind(this)}
           >
-            {this.componentLoader(this.state?.loading)}
-            {this.componentsChatMessages(this.model)}
+            {children}
           </div>
           <ChatInput
             state={this.state}
@@ -132,8 +138,9 @@ export default class ChatViewport extends Component {
   }
 
   componentLoader(watch) {
+    // [FIX] Mithril keys：给 Loader 一个稳定 key，避免与消息条目（已 keyed）混用
     return watch ? (
-      <msgloader className="message-wrapper--loading">
+      <msgloader key="__loader__" className="message-wrapper--loading">
         <LoadingIndicator className="loading-old Button-icon" />
       </msgloader>
     ) : null;
