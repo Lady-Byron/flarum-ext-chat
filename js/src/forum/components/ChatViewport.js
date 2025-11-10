@@ -11,6 +11,7 @@
 // [FIX] 小坑 B：scrollToAnchor() 用矩形差计算相对位移，兼容 documentElement/.wrapper
 // [HARDEN] 加固 1：loadChat() 回滚定位加定时器防抖，切会话频繁不叠加
 // [HARDEN] 加固 2：wrapperOnScroll() 缓存本次回调使用的 state，避免切会话竞态
+// [FIX] 必改：scrollToBottom 提前 return 时复位 this.scrolling，避免卡死
 
 import app from 'flarum/forum/app';
 import Component from 'flarum/common/Component';
@@ -238,6 +239,7 @@ export default class ChatViewport extends Component {
       const el = this.getChatWrapper();
       if (!el) return;
 
+      // 仅当允许粘底且确有新消息时安排一次“滚到底”
       if (this.model && this.state && this.state.scroll.autoScroll && this.state.newPushedPosts) {
         if (this.autoScrollTimeout) clearTimeout(this.autoScrollTimeout);
         this.autoScrollTimeout = setTimeout(this.scrollToBottom.bind(this, true), 100);
@@ -390,7 +392,8 @@ export default class ChatViewport extends Component {
         const wrapper = this.wrapperEl || document.querySelector('.ChatViewport .wrapper');
         fewMessages = wrapper && wrapper.scrollHeight + 200 < document.documentElement.clientHeight;
       }
-      if (notAtBottom || fewMessages) return;
+      // [FIX] 必改：提前返回时复位 this.scrolling，避免卡死
+      if (notAtBottom || fewMessages) { this.scrolling = false; return; }
 
       const time = this.pixelsFromBottom() < 80 ? 0 : 250;
 
@@ -405,6 +408,9 @@ export default class ChatViewport extends Component {
         chatWrapper.scrollTo({ top: chatWrapper.scrollHeight, behavior: time ? 'smooth' : 'auto' });
         this.scrolling = false;
       }
+    } else {
+      // [FIX] 容器缺失也要复位，避免卡死
+      this.scrolling = false;
     }
   }
 
