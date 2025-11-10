@@ -463,20 +463,45 @@ export default class ChatState {
       // 处理音频直链
       this.handleAudioEmbeds(el, content);
 
-      // 提及修复（deleted mention -> 原生 <a>；避免在 Mithril 子树内再次 m.render）
+      // 提及修复（deleted mention -> 原生 <a>，并修正不完整 href）
       if (window.$) {
-        window.$(el).find('.UserMention.UserMention--deleted').each(function () {
-          const username = this.textContent?.slice(1);
+        const $scope = window.$(el);
+        const base = app.forum.attribute('baseUrl') || '';
+
+        // 1) 把 deleted mention（通常是 span）替换为真正的 <a>
+        $scope.find('.UserMention.UserMention--deleted').each(function () {
+          const username = this.textContent?.replace(/^@/, '').trim();
           if (!username) return;
-          const user = app.store.getBy('users', 'username', username);
-          if (!user) return;
+          // 优先用 data-id；否则按用户名
+          const dataId = this.getAttribute('data-id') || this.getAttribute('data-user-id');
+          const user = dataId
+            ? app.store.getById('users', String(dataId))
+            : app.store.getBy('users', 'username', username);
 
           const a = document.createElement('a');
           a.className = 'UserMention';
-          a.href = app.route.user(user);
-          a.textContent = '@' + (user.username?.() || username);
-          if (this.getAttribute('title')) a.setAttribute('title', this.getAttribute('title'));
+          a.textContent = '@' + (user?.username?.() || username);
+          // 优先严格路由；否则回退到 /u/<username>（URI 编码，不再把空格替换为连字符）
+          a.href = user ? app.route.user(user) : base + '/u/' + encodeURIComponent(username);
+          const title = this.getAttribute('title');
+          if (title) a.setAttribute('title', title);
           this.replaceWith(a);
+        });
+
+        // 2) 修复已是 <a> 的 mention，但 href 缺少 slug（/u/ 或空）
+        $scope.find('a.UserMention').each(function () {
+          const href = this.getAttribute('href') || '';
+          // 仅当没有 slug 时才修（/u/ 或 /u）
+          if (/\/u\/?$/.test(href)) {
+            const username = (this.textContent || '').replace(/^@/, '').trim();
+            if (!username) return;
+            const dataId = this.getAttribute('data-id') || this.getAttribute('data-user-id');
+            const user = dataId
+              ? app.store.getById('users', String(dataId))
+              : app.store.getBy('users', 'username', username);
+            const fixed = user ? app.route.user(user) : base + '/u/' + encodeURIComponent(username);
+            this.setAttribute('href', fixed);
+          }
         });
       }
 
