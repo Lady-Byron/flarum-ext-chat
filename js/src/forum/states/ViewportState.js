@@ -137,6 +137,9 @@ export default class ViewportState {
       },
     });
 
+    // [FIX] 给乐观消息一个稳定临时 key，等待后端回写 id() 再替换
+    model.tempKey = `tmp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+
     // [FIX] 关键：为 apiEndpoint() 提供 chatId，命中 POST /chatmessages/{chatId}
     model.pushAttributes({ chat_id: chatModel.id?.() });
     // [FIX] 关键：保证在 save 前 model.chat() 返回 Chat 模型（避免仅有 identifier 时退回集合端点）
