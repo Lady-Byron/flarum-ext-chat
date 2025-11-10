@@ -220,7 +220,6 @@ export default class ChatViewport extends Component {
       super.onbeforeupdate(vnode, vnodeNew);
       if (
         !this.state ||
-        !this.state.scroll?.autoScroll ||   // [FIX] 使用 this.state.scroll.autoScroll
         !this.nearBottom() ||
         !this.state.newPushedPosts
       ) {
@@ -239,7 +238,7 @@ export default class ChatViewport extends Component {
       const el = this.getChatWrapper();
       if (!el) return;
 
-      if (this.model && this.state && this.state.scroll.autoScroll) {
+      if (this.model && this.state && this.state.scroll.autoScroll && this.state.newPushedPosts) {
         if (this.autoScrollTimeout) clearTimeout(this.autoScrollTimeout);
         this.autoScrollTimeout = setTimeout(this.scrollToBottom.bind(this, true), 100);
       }
@@ -287,6 +286,9 @@ export default class ChatViewport extends Component {
     }
 
     const currentHeight = el.scrollHeight;
+
+    // 根据是否在底部更新“粘底”开关
+    state.scroll.autoScroll = this.atBottom();
 
     if (this.atBottom()) {
       state.newPushedPosts = false;
@@ -397,14 +399,10 @@ export default class ChatViewport extends Component {
         jq
           .stop()
           .animate({ scrollTop: chatWrapper.scrollHeight }, time, 'swing', () => {
-            if (this.state) {
-              this.state.scroll.autoScroll = false;
-            }
             this.scrolling = false;
           });
       } else {
         chatWrapper.scrollTo({ top: chatWrapper.scrollHeight, behavior: time ? 'smooth' : 'auto' });
-        if (this.state) this.state.scroll.autoScroll = false;
         this.scrolling = false;
       }
     }
