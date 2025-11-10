@@ -493,19 +493,38 @@ export default class ChatState {
         // 2) 修复已是 <a> 的 mention，但 href 缺少 slug（/u/ 或空）
         $scope.find('a.UserMention').each(function () {
           const href = this.getAttribute('href') || '';
-          // 仅当没有 slug 时才修（/u/ 或 /u）
-          if (/\/u\/?$/.test(href)) {
-            const username = (this.textContent || '').replace(/^@/, '').trim();
-            if (!username) return;
-            const dataId = this.getAttribute('data-id') || this.getAttribute('data-user-id');
-            const user = dataId
-              ? app.store.getById('users', String(dataId))
-              : app.store.getBy('users', 'username', username);
-            const fixed = user ? app.route.user(user) : base + '/u/' + encodeURIComponent(username);
-            this.setAttribute('href', fixed);
-          }
-        });
-      }
+
+        // 优先取 data-username；无则回退文本
+        const dataUsername = (this.getAttribute('data-username') || '').trim();
+        const textUsername = (this.textContent || '').replace(/^@/, '').trim();
+        const nameCandidate = dataUsername || textUsername;
+
+        // 优先用 data-id；否则按用户名尝试找模型
+        const dataId = this.getAttribute('data-id') || this.getAttribute('data-user-id');
+        const user =
+          (dataId && app.store.getById('users', String(dataId))) ||
+          (nameCandidate && app.store.getBy('users', 'username', nameCandidate)) ||
+          null;
+          
+        // 期望使用的 slug（优先模型 slug/username，其次 data-username，最后文本）
+        const canonicalSlug =
+          (user && (user.slug?.() || user.username?.())) ||
+          nameCandidate ||
+          '';
+
+        if (!canonicalSlug) return;
+
+        // 从现有 href 里提取当前 slug（若存在）
+        const m = href.match(/\/u\/([^/?#]+)/);
+        const currentSlug = m ? decodeURIComponent(m[1]) : '';
+
+        // 条件：缺少 slug，或与 canonical 不一致 → 修复
+        if (!currentSlug || currentSlug.toLowerCase() !== canonicalSlug.toLowerCase()) {
+          const fixed = user ? app.route.user(user) : base + '/u/' + encodeURIComponent(canonicalSlug);
+          this.setAttribute('href', fixed);
+        }
+      });
+    }
 
       // 安全加载 message 内脚本（按 url 去重，不重复注入）
       const self = this;
