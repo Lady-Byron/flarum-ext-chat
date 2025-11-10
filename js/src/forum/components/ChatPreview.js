@@ -17,11 +17,13 @@ export default class ChatPreview extends Component {
 
     this.model = this.attrs.model;
 
+    // [CHANGED] SubtreeRetainer：加入 unreaded() 作为依赖，保证角标变化触发重绘
     this.subtree = new SubtreeRetainer(
       () => this.model.freshness,
       () => app.chat.getCurrentChat(),
       // Reactive attrs
-      () => this.model.isNeedToFlash
+      () => this.model.isNeedToFlash,
+      () => this.model.unreaded?.() // ★ 新增：监听未读数变化
     );
   }
 
@@ -36,12 +38,27 @@ export default class ChatPreview extends Component {
     const cur = app.chat.getCurrentChat();
     const isActive = cur && cur.id && this.model.id && cur.id() === this.model.id(); // [CHANGED] 按 id 比较
 
+    // ★ DM/非DM 角标分支：DM 显示数字；非 DM（群聊/公共）显示星标
+    const isDM = app.chat.isChatPM(this.model);
+    const unread = Number(this.model.unreaded?.() || 0);
+    const showNumber = isDM && unread > 0;   // DM：数字角标
+    const showStar   = !isDM && unread > 0;  // 非 DM：星标角标（不显示具体数字）
+
     return (
       <div style={{ position: 'relative' }}>
         <div className={classList({ 'panel-preview': true, active: !!isActive })}>
           {this.componentPreview()}
         </div>
-        {this.model.unreaded() ? <div className="unreaded">{this.model.unreaded()}</div> : null}
+
+        {/* DM → 数字角标 */}
+        {showNumber ? <div className="unreaded">{unread}</div> : null}
+
+        {/* 非 DM → 星标角标（样式与数字角标同位；CSS 中使用 .unreaded--icon 自定义外观） */}
+        {showStar ? (
+          <div className="unreaded unreaded--icon">
+            <i className="fas fa-star" />
+          </div>
+        ) : null}
       </div>
     );
   }
