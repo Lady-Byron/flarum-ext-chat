@@ -86,9 +86,7 @@ export default class ChatViewport extends Component {
             onremove={this.wrapperOnRemove.bind(this)}
           >
             {this.componentLoader(this.state?.loading)}
-            {this.componentsChatMessages(this.model).concat(
-              this.state.input.writingPreview ? this.componentChatMessage(this.state.input.previewModel) : []
-            )}
+            {this.componentsChatMessages(this.model)}
           </div>
           <ChatInput
             state={this.state}
