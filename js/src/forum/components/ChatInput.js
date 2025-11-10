@@ -160,14 +160,7 @@ export default class ChatInput extends Component {
 
     this.resizeInput();
 
-    if (this.state.input.messageLength) {
-      if (!this.state.input.writingPreview && !this.state.messageEditing) this.inputPreviewStart(inputValue);
-    } else {
-      if (this.state.input.writingPreview && !inputValue.length) this.inputPreviewEnd();
-    }
-
     if (this.state.messageEditing) this.state.messageEditing.content = inputValue;
-    else if (this.state.input.writingPreview) this.state.input.previewModel.content = inputValue;
 
     if (this.attrs.oninput) this.attrs.oninput(e);
   }
