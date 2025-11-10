@@ -278,9 +278,11 @@ export default class ChatState {
   }
 
   getUnreadedTotal() {
-    const list = this.getChats();
+    const list = this.getChats().filter((c) => this.isChatPM(c));   // ★ 只统计 DM
     if (!list.length) return 0;
-    return list.map((m) => Math.max(Number(m.unreaded?.() || 0), 0)).reduce((a, b) => a + b, 0); // [CHANGED] D
+    return list
+      .map((m) => Math.max(Number(m.unreaded?.() || 0), 0))
+      .reduce((a, b) => a + b, 0);
   }
 
   addChat(model, outside = false) {
