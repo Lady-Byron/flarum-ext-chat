@@ -15,6 +15,7 @@
 // === 本次新增（关键修复）===
 // [ADDED] apiFetchChats：拉取会话列表；无论成功失败都关闭 chatsLoading；按 id 去重并恢复上次选中
 // [FIX]   renderChatMessage 的“提及修复”改为原生 <a> 替换，避免在 Mithril 子树内再次 m.render 造成 NotFoundError
+//         且修正 @ 链接：优先 data-id → username → 当前会话参与者 → 全局已加载用户，生成正确的 /u/<username>
 
 import app from 'flarum/forum/app';
 import Model from 'flarum/common/Model';
@@ -281,7 +282,7 @@ export default class ChatState {
     const list = this.getChats().filter((c) => this.isChatPM(c));   // ★ 只统计 DM
     if (!list.length) return 0;
     return list
-      .map((m) => Math.max(Number(m.unreaded?.() || 0), 0))
+      .map((m) => Math.max(Number(m.unreaded?.() || 0), 0))        // [CHANGED] D
       .reduce((a, b) => a + b, 0);
   }
 
@@ -463,68 +464,81 @@ export default class ChatState {
       // 处理音频直链
       this.handleAudioEmbeds(el, content);
 
-      // 提及修复（deleted mention -> 原生 <a>，并修正不完整 href）
+      // 提及修复（deleted mention -> 原生 <a>，并修正不完整 href/错误 slug）
       if (window.$) {
         const $scope = window.$(el);
         const base = app.forum.attribute('baseUrl') || '';
+        const msgModel = modelOrElement instanceof Model ? modelOrElement : null;
+        const chatModel = msgModel?.chat?.();
+
+        const eqi = (a, b) => (a || '').toLowerCase() === (b || '').toLowerCase();
+
+        // 把“名字/显示名”解析成 user：优先 data-id → username → 当前会话参与者 → 全局已加载用户
+        const resolveUser = (elNode, nameCandidate) => {
+          if (!nameCandidate) return null;
+
+          const dataId = elNode.getAttribute('data-id') || elNode.getAttribute('data-user-id');
+          let u = dataId ? app.store.getById('users', String(dataId)) : null;
+          if (u) return u;
+
+          u = app.store.getBy('users', 'username', nameCandidate);
+          if (u) return u;
+
+          const participants = chatModel?.users?.() || [];
+          u = participants.find((x) => eqi(x.displayName?.(), nameCandidate) || eqi(x.username?.(), nameCandidate));
+          if (u) return u;
+
+          const all = app.store.all('users') || [];
+          u = all.find((x) => eqi(x.displayName?.(), nameCandidate) || eqi(x.username?.(), nameCandidate));
+          return u || null;
+        };
 
         // 1) 把 deleted mention（通常是 span）替换为真正的 <a>
         $scope.find('.UserMention.UserMention--deleted').each(function () {
-          const username = (this.getAttribute('data-username') || this.textContent || '')
+          const nameCandidate = (this.getAttribute('data-username') || this.textContent || '')
             .replace(/^@/, '')
             .trim();
-          if (!username) return;
-          // 优先用 data-id；否则按用户名
-          const dataId = this.getAttribute('data-id') || this.getAttribute('data-user-id');
-          const user = dataId
-            ? app.store.getById('users', String(dataId))
-            : app.store.getBy('users', 'username', username);
+          if (!nameCandidate) return;
+
+          const user = resolveUser(this, nameCandidate);
 
           const a = document.createElement('a');
           a.className = 'UserMention';
-          a.textContent = '@' + (user?.username?.() || username);
-          // 优先严格路由；否则回退到 /u/<username>（URI 编码，不再把空格替换为连字符）
-          a.href = user ? app.route.user(user) : base + '/u/' + encodeURIComponent(username);
+          a.textContent = '@' + (user?.username?.() || nameCandidate);
+          // 优先严格路由；否则回退 /u/<nameCandidate>（URI 编码）
+          a.href = user ? app.route.user(user) : base + '/u/' + encodeURIComponent(nameCandidate);
           const title = this.getAttribute('title');
           if (title) a.setAttribute('title', title);
           this.replaceWith(a);
         });
 
-        // 2) 修复已是 <a> 的 mention，但 href 缺少 slug（/u/ 或空）
+        // 2) 修复已是 <a> 的 mention：缺 slug 或 slug 与用户名（或模型）不一致
         $scope.find('a.UserMention').each(function () {
           const href = this.getAttribute('href') || '';
 
-        // 优先取 data-username；无则回退文本
-        const dataUsername = (this.getAttribute('data-username') || '').trim();
-        const textUsername = (this.textContent || '').replace(/^@/, '').trim();
-        const nameCandidate = dataUsername || textUsername;
+          // 优先 data-username；无则回退文本
+          const dataUsername = (this.getAttribute('data-username') || '').trim();
+          const textUsername = (this.textContent || '').replace(/^@/, '').trim();
+          const nameCandidate = dataUsername || textUsername;
 
-        // 优先用 data-id；否则按用户名尝试找模型
-        const dataId = this.getAttribute('data-id') || this.getAttribute('data-user-id');
-        const user =
-          (dataId && app.store.getById('users', String(dataId))) ||
-          (nameCandidate && app.store.getBy('users', 'username', nameCandidate)) ||
-          null;
-          
-        // 期望使用的 slug（优先模型 slug/username，其次 data-username，最后文本）
-        const canonicalSlug =
-          (user && (user.slug?.() || user.username?.())) ||
-          nameCandidate ||
-          '';
+          const user = resolveUser(this, nameCandidate);
+          const canonicalSlug =
+            (user && (user.slug?.() || user.username?.())) ||
+            nameCandidate ||
+            '';
+          if (!canonicalSlug) return;
 
-        if (!canonicalSlug) return;
+          // 从现有 href 里提取 slug
+          const m = href.match(/\/u\/([^/?#]+)/);
+          const currentSlug = m ? decodeURIComponent(m[1]) : '';
 
-        // 从现有 href 里提取当前 slug（若存在）
-        const m = href.match(/\/u\/([^/?#]+)/);
-        const currentSlug = m ? decodeURIComponent(m[1]) : '';
-
-        // 条件：缺少 slug，或与 canonical 不一致 → 修复
-        if (!currentSlug || currentSlug.toLowerCase() !== canonicalSlug.toLowerCase()) {
-          const fixed = user ? app.route.user(user) : base + '/u/' + encodeURIComponent(canonicalSlug);
-          this.setAttribute('href', fixed);
-        }
-      });
-    }
+          // 条件：缺少 slug 或与 canonical 不一致 → 修复
+          if (!currentSlug || !eqi(currentSlug, canonicalSlug)) {
+            const fixed = user ? app.route.user(user) : base + '/u/' + encodeURIComponent(canonicalSlug);
+            this.setAttribute('href', fixed);
+          }
+        });
+      }
 
       // 安全加载 message 内脚本（按 url 去重，不重复注入）
       const self = this;
