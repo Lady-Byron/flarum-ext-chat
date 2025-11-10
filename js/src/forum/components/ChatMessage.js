@@ -3,6 +3,7 @@
 // [FIX] 使用 this.$（或 window.$ 兜底）代替裸 $，避免第三方覆盖全局 $ 时闪烁失败
 // [CHANGED] 去掉 100ms 轮询，改为 oncreate 首次渲染 + onupdate 驱动
 // [CHANGED] 新增左右排布：给每条消息添加 mine/others 标记（自己在右，其他人在左）
+// [CHANGED] 标记位置在外层 .message-wrapper（与 ChatViewport.less 选择器对齐）
 // [KEEP] 其余保持你现有的 1.8 兼容改造（id 比较/空值守护/导入路径）
 
 import app from 'flarum/forum/app';
@@ -48,7 +49,7 @@ export default class ChatMessage extends Component {
   isMine() {
     const meId = app.session.user?.id?.();
     const authorId = this.model.user?.()?.id?.();
-    return meId && authorId && String(meId) === String(authorId);
+    return !!(meId && authorId && String(meId) === String(authorId));
   }
 
   modelEvent(name) {
@@ -64,9 +65,9 @@ export default class ChatMessage extends Component {
   }
 
   content() {
-    // [CHANGED] 外层增加 message-row + mine/others，用于左右排布
+    // [CHANGED] 外层仅保留 message-row（不再在这里挂 mine/others）
     return (
-      <div className={'message-row ' + (this.isMine() ? 'mine' : 'others')}>
+      <div className="message-row">
         {this.model.user() ? (
           <Link className="avatar-wrapper" href={app.route.user(this.model.user())}>
             <span>{avatar(this.model.user(), { className: 'avatar' })}</span>
@@ -79,6 +80,7 @@ export default class ChatMessage extends Component {
 
         <div className="message-block">
           <div className="toolbar">
+            {/* 保持 .name 选择器供装饰插件使用 */}
             <a className="name" onclick={this.modelEvent.bind(this, 'insertMention')}>
               {username(this.model.user())}{': '}
             </a>
@@ -124,10 +126,14 @@ export default class ChatMessage extends Component {
   }
 
   view() {
+    const isMine = this.isMine();
+
     return (
       <div
         className={classList({
           'message-wrapper': true,
+          'mine': !!isMine,      // ✅ 自己 → 右侧
+          'others': !isMine,     // ✅ 别人 → 左侧
           hidden: this.model.deleted_by(),
           editing: this.model.isEditing,
           deleted: !this.isVisible(),
@@ -225,7 +231,11 @@ export default class ChatMessage extends Component {
       } else {
         items.add(
           'dropdownHide',
-          <Button onclick={this.modelEvent.bind(this, 'dropdownHide')} icon="fas fa-trash-alt" disabled={this.model.isEditing}>
+          <Button
+            onclick={this.modelEvent.bind(this, 'dropdownHide')}
+            icon="fas fa-trash-alt"
+            disabled={this.model.isEditing}
+          >
             {app.translator.trans('core.forum.post_controls.delete_button')}
           </Button>
         );
