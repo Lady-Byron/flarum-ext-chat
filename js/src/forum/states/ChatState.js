@@ -35,6 +35,10 @@ audio.volume = 0.5;
 
 export default class ChatState {
   constructor() {
+
+    // [MENTION] 每会话的本地 @ 计数（前端内存，不序列化）
+    this.atCounters = {};
+
     this.q = Stream('');
 
     /** @type {import('../models/Chat').default[]} */
@@ -349,6 +353,10 @@ export default class ChatState {
   onChatChanged(model) {
     if (model === this.getCurrentChat()) return;
     this.setCurrentChat(model);
+
+    // [MENTION] 进入会话视为已关注到 @ 提醒 → 本地清零
+    if (model) this.clearAtUnread(model);
+    
     try {
       m.redraw.sync();
     } catch (e) {
@@ -365,6 +373,25 @@ export default class ChatState {
 
   getCurrentChat() {
     return this.curChat;
+  }
+
+
+  // [MENTION] 取/增/清 指定会话的 @ 未读
+  getAtUnread(chat) {
+    const id = chat?.id?.();
+    return id ? (this.atCounters[id] || 0) : 0;
+  }
+
+  incAtUnread(chat) {
+    const id = chat?.id?.();
+    if (!id) return;
+    this.atCounters[id] = (this.atCounters[id] || 0) + 1;
+  }
+
+  clearAtUnread(chat) {
+    const id = chat?.id?.();
+    if (!id) return;
+    this.atCounters[id] = 0;
   }
 
   /* --------------------------------
@@ -404,6 +431,9 @@ export default class ChatState {
 
       const chatModel = model.chat?.();
       if (chatModel) {
+        // [MENTION] 若这条新消息 @ 了“我”，为该会话的本地 @ 计数 +1
+        if (this.messageIsMention(model)) this.incAtUnread(chatModel);
+        
         chatModel.isNeedToFlash = true;
         const current = parseInt(chatModel.unreaded?.() ?? 0, 10) || 0;
         chatModel.pushAttributes({ unreaded: current + 1 });
@@ -697,6 +727,8 @@ export default class ChatState {
 
     this.readingTimeout = setTimeout(() => {
       chat.save({ actions: { reading: timestamp } });
+
+      this.clearAtUnread(chat); // [MENTION] 上报已读后清空本地 @
     }, 1000);
   }
 
