@@ -91,7 +91,7 @@ export default class ChatInput extends Component {
           onpaste={this.inputProcess.bind(this)}
           onkeyup={this.inputSaveDraft.bind(this)}
           rows={this.state.input.rows}
-          value={this.state.input.content()}
+          value={this.state.input.content() || ''}
           // [CHANGED] 移除 onupdate，避免与 onkeyup 的节流保存叠加
         />
 
