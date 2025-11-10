@@ -1,10 +1,8 @@
 .ChatViewport {
-  /* 背景与排版参数 */
   background: rgba(0,0,0,.1);
   --bubble-max:72%; --bubble-fs:15.5px; --bubble-lh:1.55; --bubble-py:8px; --bubble-px:12px; --bubble-r:14px;
-  --av:34px; /* 头像尺寸 */ --gap:9px; /* 头像与文本块间距 */
+  --av:34px; --gap:9px;
 
-  /* 提及 */
   .UserMention{ .user-select(none); a{color:rgba(46,96,177,.9) !important;}
     display:inline-block;color:rgba(105,122,150,.9) !important;background:rgba(255,255,255,.1);
     border-radius:6px;padding:2px 8px;margin:2px 3px;border:1px solid rgba(255,255,255,.15) !important;
@@ -12,7 +10,6 @@
   }
   .UserMention:hover{ a{color:@glass-text !important;} color:@glass-text !important; background:rgba(255,255,255,.15); }
 
-  /* 悬浮滚动按钮 */
   .scroller{
     width:40px;height:40px;position:absolute;background:rgba(255,255,255,.15);
     backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);border:1px solid rgba(255,255,255,.2);
@@ -30,7 +27,6 @@
       span{display:block;color:@glass-text-muted;}
     }
 
-    /* 外层容器（保留原结构） */
     .message-wrapper,.message-wrapper--loading{
       display:block;padding:8px 3px 8px 15px;position:relative;margin:4px 0;border-radius:8px;transition:all .2s ease;
       &:hover{background:rgba(255,255,255,.05);} &.odd{background:rgba(255,255,255,.03);}
@@ -38,34 +34,33 @@
       &.hidden{ .avatar-wrapper,.name,.labels,.message,.timestamp{opacity:.3;} }
       &.deleted{display:none;}
 
-      /* —— 左右排布：在 .message-row 上（前端已加入 mine/others） —— */
       .message-row{position:relative;display:block;}
-      /* 头像定位（默认在左） */
+
       .avatar-wrapper{position:absolute;left:0;
-        .avatar{width:var(--av);height:var(--av);border-radius:var(--av);font-size:calc(var(--av)/2);line-height:var(--av);cursor:pointer;}
-      }
-      /* 你在右：头像靠右，文本块右边距扩大，工具条右对齐改为左对齐 */
-      .message-row.mine{
-        .avatar-wrapper{right:0;left:auto;}
-        .message-block{margin-left:0;margin-right:calc(var(--av) + var(--gap));text-align:right;}
-        .toolbar{ text-align:right; }
-        .toolbar .right{ left:0; right:auto; text-align:left; padding-left:5px; padding-right:0; }
-      }
-      /* 他人在左：保持原本布局 */
-      .message-row.others{
-        .avatar-wrapper{left:0;right:auto;}
-        .message-block{margin-left:calc(var(--av) + var(--gap));}
-        .toolbar .right{ right:0; left:auto; text-align:right; padding-right:5px; }
+        .avatar{
+          width:var(--av);height:var(--av);border-radius:var(--av);
+          font-size:calc(~"var(--av) / 2"); line-height:var(--av); cursor:pointer;
+        }
       }
 
-      /* Hover 名牌 */
+      .message-row.mine{
+        .avatar-wrapper{right:0;left:auto;}
+        .message-block{margin-left:0;margin-right:calc(~"var(--av) + var(--gap)");text-align:right;}
+        .toolbar{text-align:right;}
+        .toolbar .right{left:0;right:auto;text-align:left;padding-left:5px;padding-right:0;}
+      }
+      .message-row.others{
+        .avatar-wrapper{left:0;right:auto;}
+        .message-block{margin-left:calc(~"var(--av) + var(--gap)");}
+        .toolbar .right{right:0;left:auto;text-align:right;padding-right:5px;}
+      }
+
       span[data-name]:hover:after{
         content:attr(data-name);padding:6px 10px;color:@glass-text;background:rgba(0,0,0,.8);
         backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);position:absolute;white-space:nowrap;z-index:20;
         border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.2);font-size:12px;
       }
 
-      /* 事件消息 */
       .event{
         min-height:25px;color:@glass-text-muted;text-align:center;padding:8px;line-height:1.5;margin-right:100px;
         background:rgba(255,255,255,.05);border-radius:8px;margin:4px 0;
@@ -74,23 +69,19 @@
         .chat-title{max-width:150px;text-overflow:ellipsis;display:inline-block;white-space:nowrap;}
       }
 
-      /* 文本块与气泡 */
       .message-block{position:relative;}
+
       .message{
         display:inline-block;max-width:var(--bubble-max);font-size:var(--bubble-fs);line-height:var(--bubble-lh);
         padding:var(--bubble-py) var(--bubble-px);border-radius:var(--bubble-r);min-height:30px;word-break:break-word;white-space:normal;
         color:@glass-text;background:rgba(255,255,255,.92);box-shadow:0 1px 1.5px rgba(0,0,0,.08);
       }
-      .message-row.mine .message{ background:var(--primary-color,#4aa3ff); color:#fff; border-top-right-radius:4px;border-top-left-radius:16px; }
-      .message-row.others .message{ background:rgba(255,255,255,.92); color:#111; border-top-left-radius:4px;border-top-right-radius:16px; }
+      .message-row.mine .message{background:var(--primary-color,#4aa3ff);color:#fff;border-top-right-radius:4px;border-top-left-radius:16px;}
+      .message-row.others .message{background:rgba(255,255,255,.92);color:#111;border-top-left-radius:4px;border-top-right-radius:16px;}
 
-      /* Emoji */
       .message img.emoji,.message .emoji{height:1.1em !important;width:1.1em !important;display:inline-block !important;vertical-align:-.15em;max-width:none !important;max-height:none !important;border:0;padding:0;}
-      /* 图片（排除 emoji） */
       .message img:not(.emoji){max-height:290px;max-width:100%;height:auto;border-radius:8px;display:block;}
-      /* 视频 */
       .message video{max-width:100% !important;width:100% !important;max-height:290px !important;height:auto !important;display:block !important;box-sizing:border-box !important;border-radius:8px;}
-      /* 音频 */
       .message audio{
         max-width:290px !important;width:100% !important;height:40px !important;min-height:40px !important;display:block !important;margin:8px 0 !important;border-radius:8px !important;
         background:rgba(255,255,255,.15) !important;border:1px solid rgba(255,255,255,.3) !important;outline:none !important;
@@ -100,7 +91,6 @@
         &::-webkit-media-controls-volume-slider{background-color:rgba(255,255,255,.3);border-radius:4px;}
         &::-webkit-media-controls-current-time-display,&::-webkit-media-controls-time-remaining-display{color:rgba(255,255,255,.9);font-size:12px;}
       }
-      /* p/div 内视频宽度兜底 */
       .message p{max-width:100% !important;overflow:hidden !important;margin:0 !important;padding:0 !important;
         video{max-width:100% !important;width:100% !important;height:auto !important;display:block !important;box-sizing:border-box !important;}
       }
@@ -108,16 +98,13 @@
         video{max-width:100% !important;width:100% !important;height:auto !important;display:block !important;}
       }
       .message [controls]{max-width:100% !important;width:100% !important;height:auto !important;}
-      /* 嵌入媒体 */
       .message iframe,.message embed,.message object{max-width:100% !important;width:100% !important;height:auto !important;border-radius:8px;display:block !important;box-sizing:border-box !important;}
-      /* 链接 */
       .message a{cursor:pointer;color:rgba(0,122,255,.8);text-decoration:none;font-weight:500;&:hover{color:rgba(0,122,255,1);} }
 
-      /* 工具条（放大昵称 + 固定高度，避免与气泡重叠） */
       .toolbar{position:relative;min-height:20px;padding-bottom:2px;
         .name{display:inline;color:@glass-text;font-weight:700;cursor:pointer;font-size:15px;}
         .labels{display:inline;opacity:1; .icon{display:inline-block;color:@glass-text-muted;padding:0 5px; span{font-size:9pt;} } }
-        .right{display:inline;position:absolute;top:0;} /* 具体左右由上面的 mine/others 决定 */
+        .right{display:inline;position:absolute;top:0;}
         .timestamp{display:inline;color:@glass-text-muted;cursor:pointer;text-align:right;white-space:nowrap;font-size:12px;overflow:hidden;text-overflow:ellipsis;}
         .edit{
           display:inline;padding:0 5px;
@@ -128,12 +115,10 @@
         }
       }
 
-      /* 旧渲染兼容：默认把 message 内的块元素并排为行内 */
       .message p, .message div:not(.LoadingIndicator){display:inline;margin:0;padding:0;}
     }
   }
 
-  /* 移动端：放宽最大宽度 */
   @media @phone { .wrapper{ --bubble-max:85%; } }
 }
 
