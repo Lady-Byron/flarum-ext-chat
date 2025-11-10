@@ -80,7 +80,7 @@ export default class ChatMessage extends Component {
         <div className="message-block">
           <div className="toolbar">
             <a className="name" onclick={this.modelEvent.bind(this, 'insertMention')}>
-              {extractText(username(this.model.user())) + ': '}
+              {username(this.model.user())}{': '}
             </a>
 
             <div className="labels">
