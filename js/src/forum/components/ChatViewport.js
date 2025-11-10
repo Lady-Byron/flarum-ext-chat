@@ -13,7 +13,7 @@
 // [HARDEN] 加固 2：wrapperOnScroll() 缓存本次回调使用的 state，避免切会话竞态
 // [FIX] 必改：scrollToBottom 提前 return 时复位 this.scrolling，避免卡死
 // [FIX] Mithril keys：为 Loader 添加稳定 key，并以数组形式组装 children，避免“键混用”错误
-// [FIX] 临时 key：对消息条目统一计算 key（优先 id()，否则 tempKey），避免“无 key”乐观消息与“有 key”历史消息混用
+// [FIX] 临时 key：对消息条目统一计算 key（优先 id()，否则 tempKey，再退回 map index），避免“无 key”乐观消息与“有 key”历史消息混用
 
 import app from 'flarum/forum/app';
 import Component from 'flarum/common/Component';
@@ -116,11 +116,10 @@ export default class ChatViewport extends Component {
     );
   }
 
-  componentChatMessage(model) {
-    // [FIX] 临时 key：优先使用真实 id()；若尚未分配 id（乐观消息），使用 tempKey（由 ViewportState 创建消息时注入）
-    const key =
-      (typeof model.id === 'function' ? model.id() : model?.data?.id) ??
-      model.tempKey;
+  // [FIX] 临时 key：优先使用真实 id()；若尚未分配 id（乐观消息），使用 tempKey；仍无则退回 map index
+  componentChatMessage(model, idx) {
+    const id = typeof model.id === 'function' ? model.id() : model?.data?.id;
+    const key = id ?? model?.tempKey ?? `__idx_${idx}`;
     return model.type()
       ? <ChatEventMessage key={key} model={model} />
       : <ChatMessage key={key} model={model} />;
@@ -129,9 +128,10 @@ export default class ChatViewport extends Component {
   // [CHANGED] 用 id 比较，规避“同 id 不同实例”漏配
   componentsChatMessages(chat) {
     const chatId = String(chat?.id?.() ?? '');
-    return app.chat
-      .getChatMessages((mdl) => String(mdl.chat()?.id?.() ?? '') === chatId)
-      .map((model) => this.componentChatMessage(model));
+    const list = app.chat.getChatMessages(
+      (mdl) => String(mdl.chat()?.id?.() ?? '') === chatId
+    );
+    return list.map((model, idx) => this.componentChatMessage(model, idx));
   }
 
   componentScroller() {
@@ -144,11 +144,12 @@ export default class ChatViewport extends Component {
 
   componentLoader(watch) {
     // [FIX] Mithril keys：给 Loader 一个稳定 key，避免与消息条目（已 keyed）混用
+    // 始终渲染同一个带 key 的 vnode；用样式控制显隐，规避“时有时无”的 children 结构差异
     return (
       <msgloader
         key="__loader__"
         className="message-wrapper--loading"
-        style={{ display: watch ? '' : 'none' }} // 始终渲染同一个带 key 的 vnode，用样式控制显隐
+        style={{ display: watch ? '' : 'none' }}
       >
         <LoadingIndicator className="loading-old Button-icon" />
       </msgloader>
@@ -235,6 +236,7 @@ export default class ChatViewport extends Component {
       super.onbeforeupdate(vnode, vnodeNew);
       if (
         !this.state ||
+        !this.state.scroll?.autoScroll ||  // [FIX] 使用 this.state.scroll.autoScroll
         !this.nearBottom() ||
         !this.state.newPushedPosts
       ) {
