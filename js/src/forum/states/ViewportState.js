@@ -1,8 +1,12 @@
 // js/src/forum/states/ViewportState.js
+// 关掉“输入实时预览”：输入区仅维护文本；发送时创建一次性消息模型并提交。
+// - messageSend(): 不再走 writingPreview 分支；直接创建 chatmessages 记录、乐观插入并保存
+// - messageEdit(): 移除与预览相关的守护
+// 其余逻辑保持不变（草稿存取 / 粘底滚动由 ChatViewport 承担）
 
-// [CHANGED] 对 preview/trim 做空值守护；本文件其余逻辑保持不变
 import app from 'flarum/forum/app';
 import Stream from 'flarum/common/utils/Stream';
+import Model from 'flarum/common/Model';
 
 export default class ViewportState {
   loadingSend = false;
@@ -93,37 +97,39 @@ export default class ViewportState {
 
   messageSend() {
     const text = this.input.content();
+    const trimmed = (text || '').trim();
 
-    if (text && text.trim().length > 0 && !this.loadingSend) {
-      if (this.input.writingPreview) {
-        if (this.input.instance?.inputPreviewEnd) {
-          // [CHANGED] 防守 instance 为空
-          this.input.instance.inputPreviewEnd();
-        }
-        this.input.writingPreview = false;
+    if (!trimmed || this.loadingSend) return;
 
-        this.messagePost(this.input.previewModel);
-        app.chat.insertChatMessage(Object.assign(this.input.previewModel, {}));
-
-        this.inputClear();
-      } else if (this.messageEditing) {
-        const model = this.messageEditing;
-        // [CHANGED] 防守 null/undefined
-        if ((model.content || '').trim() !== (model.oldContent || '').trim()) {
-          model.oldContent = model.content;
-          app.chat.editChatMessage(model, true, model.content);
-        }
-        this.messageEditEnd();
-        this.inputClear();
+    // 编辑已存在消息
+    if (this.messageEditing) {
+      const model = this.messageEditing;
+      if ((model.content || '').trim() !== (model.oldContent || '').trim()) {
+        model.oldContent = model.content;
+        app.chat.editChatMessage(model, true, model.content);
       }
+      this.messageEditEnd();
+      this.inputClear();
+      return;
     }
+
+    // 发送新消息（不经预览：直接创建模型 → 乐观插入 → 异步保存）
+    const model = app.store.createRecord('chatmessages');
+    model.pushData({
+      type: 'chatmessages',
+      attributes: { message: trimmed, created_at: new Date() },
+      relationships: {
+        user: { data: Model.getIdentifier(app.session.user) },
+        chat: { data: Model.getIdentifier(this.model) },
+      },
+    });
+
+    app.chat.insertChatMessage(model);
+    this.messagePost(model);
+    this.inputClear();
   }
 
   messageEdit(model) {
-    if (this.input.writingPreview && this.input.instance?.inputPreviewEnd) {
-      // [CHANGED]
-      this.input.instance.inputPreviewEnd();
-    }
     if (this.messageEditing) this.messageEditEnd();
 
     model.isEditing = true;
