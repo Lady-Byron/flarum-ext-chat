@@ -2,6 +2,7 @@
 // [FIX] 让 .actualMessage 成为“空容器”，其 children 只由 renderChatMessage 管理，避免与 Mithril VDOM 冲突
 // [FIX] 使用 this.$（或 window.$ 兜底）代替裸 $，避免第三方覆盖全局 $ 时闪烁失败
 // [CHANGED] 去掉 100ms 轮询，改为 oncreate 首次渲染 + onupdate 驱动
+// [CHANGED] 新增左右排布：给每条消息添加 mine/others 标记（自己在右，其他人在左）
 // [KEEP] 其余保持你现有的 1.8 兼容改造（id 比较/空值守护/导入路径）
 
 import app from 'flarum/forum/app';
@@ -43,6 +44,13 @@ export default class ChatMessage extends Component {
     );
   }
 
+  // [ADDED] 是否“我自己”的消息（用于左右排布）
+  isMine() {
+    const meId = app.session.user?.id?.();
+    const authorId = this.model.user?.()?.id?.();
+    return meId && authorId && String(meId) === String(authorId);
+  }
+
   modelEvent(name) {
     const viewportState = app.chat.getViewportState(this.model.chat());
     viewportState?.onChatMessageClicked?.(name, this.model);
@@ -56,8 +64,9 @@ export default class ChatMessage extends Component {
   }
 
   content() {
+    // [CHANGED] 外层增加 message-row + mine/others，用于左右排布
     return (
-      <div>
+      <div className={'message-row ' + (this.isMine() ? 'mine' : 'others')}>
         {this.model.user() ? (
           <Link className="avatar-wrapper" href={app.route.user(this.model.user())}>
             <span>{avatar(this.model.user(), { className: 'avatar' })}</span>
@@ -281,7 +290,7 @@ export default class ChatMessage extends Component {
 
   onContentWrapperCreated(vnode) {
     super.oncreate(vnode);
-    this.contentEl = vnode.dom;      // 记住 .actualMessage 节点
+    this.contentEl = vnode.dom; // 记住 .actualMessage 节点
     this.renderMessage();
   }
 
