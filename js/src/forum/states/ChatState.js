@@ -470,7 +470,9 @@ export default class ChatState {
 
         // 1) 把 deleted mention（通常是 span）替换为真正的 <a>
         $scope.find('.UserMention.UserMention--deleted').each(function () {
-          const username = this.textContent?.replace(/^@/, '').trim();
+          const username = (this.getAttribute('data-username') || this.textContent || '')
+            .replace(/^@/, '')
+            .trim();
           if (!username) return;
           // 优先用 data-id；否则按用户名
           const dataId = this.getAttribute('data-id') || this.getAttribute('data-user-id');
