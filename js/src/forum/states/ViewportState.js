@@ -4,6 +4,7 @@
 // - messageEdit(): 移除与预览相关的守护
 // - [FIX] 发送 405：创建模型时显式写入 chat_id，并保证 model.chat() 在 save 前可用（apiEndpoint 命中 POST /chatmessages/{chatId}）
 // - [FIX] this.model 未初始化：在 constructor 保存传入的 model，并在发送/重发时用当前会话兜底
+// - [FIX] 输入框清空：inputClear() 使用空串并同步清空本地草稿，直接写入 DOM value
 // 其余逻辑保持不变（草稿存取 / 粘底滚动由 ChatViewport 承担）
 
 import app from 'flarum/forum/app';
@@ -87,6 +88,8 @@ export default class ViewportState {
       case 'insertMention':
         this.insertMention(model);
         break;
+      default:
+        break;
     }
   }
 
@@ -139,14 +142,13 @@ export default class ViewportState {
 
     // 兼容 ChatState.postChatMessage 仍读取 model.content 的旧逻辑
     model.content = trimmed;
-    // 让 Message.apiEndpoint() 在“新建”路径下也能取到 chatId
-    model.pushAttributes({ chat_id: this.model.id?.() });
 
     // [FIX] 给乐观消息一个稳定临时 key，等待后端回写 id() 再替换
     model.tempKey = `tmp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
     // [FIX] 关键：为 apiEndpoint() 提供 chatId，命中 POST /chatmessages/{chatId}
     model.pushAttributes({ chat_id: chatModel.id?.() });
+
     // [FIX] 关键：保证在 save 前 model.chat() 返回 Chat 模型（避免仅有 identifier 时退回集合端点）
     // eslint-disable-next-line no-unused-vars
     model.chat = () => chatModel;
@@ -191,10 +193,14 @@ export default class ViewportState {
   messageResend(model) {
     // 兜底：离线消息重发时确保 chat 关系与 chat_id 可用
     const chatModel = this.model || app.chat.getCurrentChat();
-    if (!model.chat?.() && chatModel) {
-      model.pushAttributes({ chat_id: chatModel.id?.() });
-      // eslint-disable-next-line no-unused-vars
-      model.chat = () => chatModel;
+    if (chatModel) {
+      if (!model.chat?.()) {
+        // eslint-disable-next-line no-unused-vars
+        model.chat = () => chatModel;
+      }
+      if (!model.data?.attributes?.chat_id) {
+        model.pushAttributes({ chat_id: chatModel.id?.() });
+      }
     }
     this.messagePost(model);
   }
@@ -216,9 +222,24 @@ export default class ViewportState {
   }
 
   inputClear() {
+    // 长度/行数复位
     this.input.messageLength = 0;
     this.input.rows = 1;
-    this.input.content(null);
+
+    // 关键：不要用 null，用空字符串，确保 DOM value 会被真正清空
+    this.input.content('');
+
+    // 同步清空本地草稿存储与内存缓存
+    this.setChatStorageValue('draft', '');
+    this.input.lastDraft = '';
+
+    // 直接清空当前 textarea 的值，避免任何渲染竞争
+    const el = this.getChatInput();
+    if (el) {
+      el.value = '';
+      el.rows = this.input.rows;
+    }
+
     m.redraw();
   }
 
