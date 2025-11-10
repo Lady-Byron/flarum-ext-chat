@@ -137,6 +137,11 @@ export default class ViewportState {
       },
     });
 
+    // 兼容 ChatState.postChatMessage 仍读取 model.content 的旧逻辑
+    model.content = trimmed;
+    // 让 Message.apiEndpoint() 在“新建”路径下也能取到 chatId
+    model.pushAttributes({ chat_id: this.model.id?.() });
+
     // [FIX] 给乐观消息一个稳定临时 key，等待后端回写 id() 再替换
     model.tempKey = `tmp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
