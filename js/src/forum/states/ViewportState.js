@@ -3,6 +3,7 @@
 // - messageSend(): 不再走 writingPreview 分支；直接创建 chatmessages 记录、乐观插入并保存
 // - messageEdit(): 移除与预览相关的守护
 // - [FIX] 发送 405：创建模型时显式写入 chat_id，并保证 model.chat() 在 save 前可用（apiEndpoint 命中 POST /chatmessages/{chatId}）
+// - [FIX] this.model 未初始化：在 constructor 保存传入的 model，并在发送/重发时用当前会话兜底
 // 其余逻辑保持不变（草稿存取 / 粘底滚动由 ChatViewport 承担）
 
 import app from 'flarum/forum/app';
@@ -29,6 +30,9 @@ export default class ViewportState {
   messagesFetched = false;
 
   constructor(params) {
+    // [FIX] 保存当前会话模型，供发送/重发使用
+    this.model = params?.model || null;
+
     if (params?.model) {
       this.initChatStorage(params.model);
       this.input.content(this.getChatStorageValue('draft'));
@@ -114,6 +118,14 @@ export default class ViewportState {
       return;
     }
 
+    // [FIX] 获取会话模型：优先用构造时注入的 this.model，兜底取当前激活会话
+    const chatModel = this.model || app.chat.getCurrentChat();
+    if (!chatModel || !chatModel.id?.()) {
+      // eslint-disable-next-line no-console
+      console.warn('[neon-chat] No active chat model when sending message.');
+      return;
+    }
+
     // 发送新消息（不经预览：直接创建模型 → 乐观插入 → 异步保存）
     const model = app.store.createRecord('chatmessages');
     model.pushData({
@@ -121,15 +133,15 @@ export default class ViewportState {
       attributes: { message: trimmed, created_at: new Date() },
       relationships: {
         user: { data: Model.getIdentifier(app.session.user) },
-        chat: { data: Model.getIdentifier(this.model) },
+        chat: { data: Model.getIdentifier(chatModel) },
       },
     });
 
     // [FIX] 关键：为 apiEndpoint() 提供 chatId，命中 POST /chatmessages/{chatId}
-    model.pushAttributes({ chat_id: this.model.id?.() });
+    model.pushAttributes({ chat_id: chatModel.id?.() });
     // [FIX] 关键：保证在 save 前 model.chat() 返回 Chat 模型（避免仅有 identifier 时退回集合端点）
     // eslint-disable-next-line no-unused-vars
-    model.chat = () => this.model;
+    model.chat = () => chatModel;
 
     app.chat.insertChatMessage(model); // 乐观回显
     this.messagePost(model);           // 异步保存
@@ -146,7 +158,8 @@ export default class ViewportState {
 
     const inputElement = this.getChatInput();
     if (inputElement) {
-      inputElement.value = this.input.content(model.oldContent);
+      this.input.content(model.oldContent);
+      inputElement.value = this.input.content();
       inputElement.focus();
       if (app.chat.input?.resizeInput) {
         app.chat.input.resizeInput();
@@ -169,10 +182,11 @@ export default class ViewportState {
 
   messageResend(model) {
     // 兜底：离线消息重发时确保 chat 关系与 chat_id 可用
-    if (!model.chat?.() && this.model) {
-      model.pushAttributes({ chat_id: this.model.id?.() });
+    const chatModel = this.model || app.chat.getCurrentChat();
+    if (!model.chat?.() && chatModel) {
+      model.pushAttributes({ chat_id: chatModel.id?.() });
       // eslint-disable-next-line no-unused-vars
-      model.chat = () => this.model;
+      model.chat = () => chatModel;
     }
     this.messagePost(model);
   }
