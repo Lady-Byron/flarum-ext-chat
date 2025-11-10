@@ -712,7 +712,8 @@ export default class ChatState {
   postChatMessage(model) {
     if (!model) return Promise.resolve();
 
-    return model.save({ message: model.content, created_at: new Date(), chat_id: model.chat?.().id?.() }).then(
+    const text = (model.content ?? model.message?.() ?? '').toString();
+    return model.save({ message: text, created_at: new Date(), chat_id: model.chat?.().id?.() }).then(
       (r) => {
         if (r?.data) {
           model.pushData(r.data);
