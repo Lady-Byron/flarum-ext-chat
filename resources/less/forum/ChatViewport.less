@@ -1,426 +1,164 @@
 .ChatViewport {
-    // Glass morphism background for the chat area - dark tone further lightened
-    background: rgba(0, 0, 0, 0.1);
-    
-    .UserMention {
-        .user-select(none);
+  /* chat 区域背景 */
+  background: rgba(0,0,0,.1);
 
-        a {
-            color: rgba(46, 96, 177, 0.9) !important;
-        }
+  .UserMention {
+    .user-select(none);
+    a { color: rgba(46,96,177,.9) !important; }
+    display: inline-block;
+    color: rgba(105,122,150,.9) !important;
+    background: rgba(255,255,255,.1);
+    border-radius: 6px;
+    padding: 2px 8px;
+    margin: 2px 3px;
+    border: 1px solid rgba(255,255,255,.15) !important;
+    backdrop-filter: blur(5px);
+    -webkit-backdrop-filter: blur(5px);
+  }
+  .UserMention:hover {
+    a { color: @glass-text !important; }
+    color: @glass-text !important;
+    background: rgba(255,255,255,.15);
+  }
 
-        display: inline-block;
-        color: rgba(105, 122, 150, 0.9) !important;
-        background: rgba(255, 255, 255, 0.1);
-        border-radius: 6px;
-        padding: 2px 8px;
-        margin: 2px 3px;
-        border: 1px solid rgba(255, 255, 255, 0.15) !important;
-        backdrop-filter: blur(5px);
-        -webkit-backdrop-filter: blur(5px);
+  .scroller {
+    width: 40px; height: 40px; position: absolute;
+    background: rgba(255,255,255,.15);
+    backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+    border: 1px solid rgba(255,255,255,.2);
+    opacity: .8; color: @glass-text; right: 30px; bottom: 70px;
+    border-radius: 100px; line-height: 40px; font-size: 24px; text-align: center;
+    cursor: pointer; box-shadow: 0 4px 16px rgba(0,0,0,.1); .transition(all .2s ease);
+    &:hover { opacity:1; background: rgba(255,255,255,.2); transform: translateY(-2px); box-shadow:0 6px 20px rgba(0,0,0,.15); }
+    .loading { position: absolute; top: 425px; float: left; right: 15px; }
+  }
+
+  .wrapper {
+    overflow-y: scroll; overflow-x: hidden; height: 100%;
+
+    .welcome {
+      margin: auto; margin-top: 150px; text-align: center;
+      h1 { display:block; font-size:25pt; margin:5px; color:@glass-text; font-weight:300; }
+      span { display:block; color:@glass-text-muted; }
     }
 
-    .UserMention:hover {
-        a {
-            color: @glass-text !important;
+    .message-wrapper,
+    .message-wrapper--loading {
+      display:block; padding:8px 3px 8px 15px; position:relative; margin:2px 0; border-radius:8px; transition: all .2s ease;
+      &:hover { background: rgba(255,255,255,.05); }
+      &.odd { background: rgba(255,255,255,.03); }
+      &.editing {
+        .avatar-wrapper,.name,.labels,.message,.timestamp { opacity:.6; }
+      }
+      &.hidden {
+        .avatar-wrapper,.name,.labels,.message,.timestamp { opacity:.3; }
+      }
+      &.deleted { display:none; }
+
+      .avatar-wrapper { position:absolute;
+        .avatar { width:26px; height:26px; border-radius:26px; font-size:13px; line-height:26px; cursor:pointer; }
+      }
+
+      span[data-name]:hover:after {
+        content: attr(data-name); padding:6px 10px; color:@glass-text; background: rgba(0,0,0,.8);
+        backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+        position:absolute; white-space:nowrap; z-index:20px; border-radius:8px; box-shadow:0 4px 16px rgba(0,0,0,.2); font-size:12px;
+      }
+
+      .event {
+        min-height:25px; color:@glass-text-muted; text-align:center; padding:8px; line-height:1.5; margin-right:100px;
+        background: rgba(255,255,255,.05); border-radius:8px; margin:4px 0;
+        i { vertical-align:text-bottom; font-size:14pt; padding:0 2px; }
+        .timestamp { color:@glass-text-muted; position:absolute; right:8px; line-height:2; top:7px; width:100px; text-align:right; font-size:12px; white-space:nowrap; }
+        .chat-title { max-width:150px; text-overflow:ellipsis; display:inline-block; white-space:nowrap; }
+      }
+
+      .message-block {
+        margin-left:35px; position:relative;
+
+        .message {
+          padding:5px 0; word-break: break-word; white-space: normal; min-height:30px; color:@glass-text; line-height:1.4;
+
+          /* === Emoji 规范化：跟随文本，不受通用图片规则影响 === */
+          img.emoji, .emoji {
+            height:1.1em !important; width:1.1em !important;
+            display:inline-block !important; vertical-align:-.15em;
+            max-width:none !important; max-height:none !important; border:0; padding:0;
+          }
+
+          /* === 普通图片：排除 emoji === */
+          img:not(.emoji) {
+            max-height:290px; max-width:100%; height:auto; border-radius:8px; display:block;
+          }
+
+          /* 视频 */
+          video {
+            max-width:100% !important; width:100% !important; max-height:290px !important; height:auto !important;
+            display:block !important; box-sizing:border-box !important; border-radius:8px;
+          }
+
+          /* 音频 */
+          audio {
+            max-width:290px !important; width:100% !important; height:40px !important; min-height:40px !important;
+            display:block !important; margin:8px 0 !important; border-radius:8px !important;
+            background: rgba(255,255,255,.15) !important; border:1px solid rgba(255,255,255,.3) !important; outline:none !important;
+            &::-webkit-media-controls-panel { background-color: rgba(255,255,255,.1); border-radius:8px; height:40px; }
+            &::-webkit-media-controls-play-button { background-color: rgba(255,255,255,.8); border-radius:50%; width:30px; height:30px; }
+            &::-webkit-media-controls-timeline { background-color: rgba(255,255,255,.3); border-radius:4px; height:4px; }
+            &::-webkit-media-controls-volume-slider { background-color: rgba(255,255,255,.3); border-radius:4px; }
+            &::-webkit-media-controls-current-time-display,
+            &::-webkit-media-controls-time-remaining-display { color: rgba(255,255,255,.9); font-size:12px; }
+          }
+
+          /* p 内视频 */
+          p { max-width:100% !important; overflow:hidden !important; margin:0 !important; padding:0 !important;
+            video { max-width:100% !important; width:100% !important; height:auto !important; display:block !important; box-sizing:border-box !important; }
+          }
+
+          /* div 内视频 */
+          div { max-width:100% !important;
+            video { max-width:100% !important; width:100% !important; height:auto !important; display:block !important; }
+          }
+
+          /* 兜底 */
+          [controls] { max-width:100% !important; width:100% !important; height:auto !important; }
+
+          /* 嵌入媒体 */
+          iframe,embed,object { max-width:100% !important; width:100% !important; height:auto !important; border-radius:8px; display:block !important; box-sizing:border-box !important; }
+
+          a { cursor:pointer; color: rgba(0,122,255,.8); text-decoration:none; font-weight:500;
+            &:hover { color: rgba(0,122,255,1); }
+          }
         }
-        color: @glass-text !important;
-        background: rgba(255, 255, 255, 0.15);
+
+        &:hover { .ButtonGroup { opacity:1 !important; } }
+
+        .toolbar {
+          position:relative;
+          .name { display:inline; color:@glass-text; font-weight:600; cursor:pointer; }
+          .labels { display:inline; opacity:1;
+            .icon { display:inline-block; color:@glass-text-muted; padding:0 5px; span { font-size:9pt; } }
+          }
+          .right {
+            display:inline; right:0; position:absolute;
+            .edit {
+              display:inline; padding:0 5px;
+              .ButtonGroup { width: unset; }
+              .ButtonGroup:not(.open) { opacity:0; }
+              .Button:hover,.Button:focus { background: rgba(255,255,255,.15); color:@glass-text; border-radius:6px; }
+              .open>.Button { background: rgba(255,255,255,.15) !important; color:@glass-text !important; border-radius:6px; }
+              .Button--icon { width:24px !important; height:24px !important; padding:0; text-align:center; }
+            }
+            .timestamp {
+              display:inline; color:@glass-text-muted; cursor:pointer; padding-right:5px; text-align:right; white-space:nowrap;
+              font-size:12px; overflow:hidden; text-overflow:ellipsis;
+            }
+          }
+        }
+
+        .message p,
+        .message div:not(.LoadingIndicator) { display:inline; margin:0; padding:0; }
+      }
     }
-
-    .scroller {
-        width: 40px;
-        height: 40px;
-        position: absolute;
-        // Glass morphism scroll button
-        background: rgba(255, 255, 255, 0.15);
-        backdrop-filter: blur(10px);
-        -webkit-backdrop-filter: blur(10px);
-        border: 1px solid rgba(255, 255, 255, 0.2);
-        opacity: 0.8;
-        color: @glass-text;
-        right: 30px;
-        bottom: 70px;
-        border-radius: 100px;
-        line-height: 40px;
-        font-size: 24px;
-        text-align: center;
-        cursor: pointer;
-        box-shadow: 0 4px 16px rgba(0, 0, 0, 0.1);
-        .transition(all .2s ease);
-
-        &:hover {
-            opacity: 1.0;
-            background: rgba(255, 255, 255, 0.2);
-            transform: translateY(-2px);
-            box-shadow: 0 6px 20px rgba(0, 0, 0, 0.15);
-        }
-
-        .loading {
-            position: absolute;
-            top: 425px;
-            float: left;
-            right: 15px;
-        }
-    }
-
-    .wrapper {
-        overflow-y: scroll;
-        overflow-x: hidden;
-        height: 100%;
-
-        .welcome {
-            margin: auto;
-            margin-top: 150px;
-            text-align: center;
-
-            h1 {
-                display: block;
-                font-size: 25pt;
-                margin: 5px;
-                color: @glass-text;
-                font-weight: 300;
-            }
-
-            span {
-                display: block;
-                color: @glass-text-muted;
-            }
-        }
-
-        .message-wrapper,
-        .message-wrapper--loading {
-            display: block;
-            padding: 8px 3px 8px 15px;
-            position: relative;
-            margin: 2px 0;
-            border-radius: 8px;
-            transition: all 0.2s ease;
-
-            &:hover {
-                background: rgba(255, 255, 255, 0.05);
-            }
-
-            &.odd {
-                background: rgba(255, 255, 255, 0.03);
-            }
-
-            &.editing {
-
-                .avatar-wrapper,
-                .name,
-                .labels,
-                .message,
-                .timestamp {
-                    opacity: 0.6
-                }
-            }
-
-            &.hidden {
-
-                .avatar-wrapper,
-                .name,
-                .labels,
-                .message,
-                .timestamp {
-                    opacity: 0.3
-                }
-            }
-
-            &.deleted {
-                display: none;
-            }
-
-            .avatar-wrapper {
-                position: absolute;
-
-                .avatar {
-                    width: 26px;
-                    height: 26px;
-                    border-radius: 26px;
-                    font-size: 13px;
-                    line-height: 26px;
-                    cursor: pointer;
-                }
-            }
-
-            span[data-name]:hover:after {
-                content: attr(data-name);
-                padding: 6px 10px;
-                color: @glass-text;
-                background: rgba(0, 0, 0, 0.8);
-                backdrop-filter: blur(10px);
-                -webkit-backdrop-filter: blur(10px);
-                position: absolute;
-                white-space: nowrap;
-                z-index: 20px;
-                border-radius: 8px;
-                box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
-                font-size: 12px;
-            }
-
-            .event {
-                min-height: 25px;
-                color: @glass-text-muted;
-                text-align: center;
-                padding: 8px;
-                line-height: 1.5;
-                margin-right: 100px;
-                background: rgba(255, 255, 255, 0.05);
-                border-radius: 8px;
-                margin: 4px 0;
-
-                i {
-                    vertical-align: text-bottom;
-                    font-size: 14pt;
-                    padding: 0px 2px;
-                }
-
-                .timestamp {
-                    color: @glass-text-muted;
-                    position: absolute;
-                    right: 8px;
-                    line-height: 2;
-                    top: 7px;
-                    width: 100px;
-                    text-align: right;
-                    font-size: 12px;
-                    white-space: nowrap;
-                }
-
-                .chat-title {
-                    max-width: 150px;
-                    text-overflow: ellipsis;
-                    display: inline-block;
-                    white-space: nowrap;
-                }
-            }
-
-            .message-block {
-                margin-left: 35px;
-                position: relative;
-
-                .message {
-                    padding: 5px 0px;
-                    word-break: break-word;
-                    white-space: normal;
-                    min-height: 30px;
-                    color: @glass-text; // Better text color
-                    line-height: 1.4;
-
-                    img {
-                        max-height: 290px;
-                        max-width: 100%;
-                        border-radius: 8px;
-                        height: auto;
-                    }
-
-                    // Force all video elements to respect container width
-                    video {
-                        max-width: 100% !important;
-                        width: 100% !important;
-                        max-height: 290px !important;
-                        height: auto !important;
-                        display: block !important;
-                        box-sizing: border-box !important;
-                        border-radius: 8px;
-                    }
-
-                    // Audio player styling
-                    audio {
-                        max-width: 290px !important;
-                        width: 100% !important;
-                        height: 40px !important;
-                        min-height: 40px !important;
-                        display: block !important;
-                        margin: 8px 0 !important;
-                        border-radius: 8px !important;
-                        background: rgba(255, 255, 255, 0.15) !important;
-                        border: 1px solid rgba(255, 255, 255, 0.3) !important;
-                        outline: none !important;
-                        
-                        &::-webkit-media-controls-panel {
-                            background-color: rgba(255, 255, 255, 0.1);
-                            border-radius: 8px;
-                            height: 40px;
-                        }
-                        
-                        &::-webkit-media-controls-play-button {
-                            background-color: rgba(255, 255, 255, 0.8);
-                            border-radius: 50%;
-                            width: 30px;
-                            height: 30px;
-                        }
-                        
-                        &::-webkit-media-controls-timeline {
-                            background-color: rgba(255, 255, 255, 0.3);
-                            border-radius: 4px;
-                            height: 4px;
-                        }
-                        
-                        &::-webkit-media-controls-volume-slider {
-                            background-color: rgba(255, 255, 255, 0.3);
-                            border-radius: 4px;
-                        }
-                        
-                        &::-webkit-media-controls-current-time-display,
-                        &::-webkit-media-controls-time-remaining-display {
-                            color: rgba(255, 255, 255, 0.9);
-                            font-size: 12px;
-                        }
-                    }
-
-                    // Target videos in paragraphs specifically
-                    p {
-                        max-width: 100% !important;
-                        overflow: hidden !important;
-                        margin: 0 !important;
-                        padding: 0 !important;
-                        
-                        video {
-                            max-width: 100% !important;
-                            width: 100% !important;
-                            height: auto !important;
-                            display: block !important;
-                            box-sizing: border-box !important;
-                        }
-                    }
-
-                    // Target videos in divs specifically
-                    div {
-                        max-width: 100% !important;
-                        
-                        video {
-                            max-width: 100% !important;
-                            width: 100% !important;
-                            height: auto !important;
-                            display: block !important;
-                        }
-                    }
-
-                    // Additional fallback selectors
-                    [controls] {
-                        max-width: 100% !important;
-                        width: 100% !important;
-                        height: auto !important;
-                    }
-
-                    // Ensure embedded media respects container width
-                    iframe,
-                    embed,
-                    object {
-                        max-width: 100% !important;
-                        width: 100% !important;
-                        height: auto !important;
-                        border-radius: 8px;
-                        display: block !important;
-                        box-sizing: border-box !important;
-                    }
-
-                    a {
-                        cursor: pointer;
-                        color: rgba(0, 122, 255, 0.8); // iOS blue
-                        text-decoration: none;
-                        font-weight: 500;
-                        
-                        &:hover {
-                            color: rgba(0, 122, 255, 1);
-                        }
-                    }
-                }
-
-                &:hover {
-                    .ButtonGroup {
-                        opacity: 1 !important;
-                    }
-                }
-
-                .toolbar {
-                    position: relative;
-
-                    .name {
-                        display: inline;
-                        color: @glass-text;
-                        font-weight: 600;
-                        cursor: pointer;
-                    }
-
-                    .labels {
-                        display: inline;
-                        opacity: 1.0;
-
-                        .icon {
-                            display: inline-block;
-                            color: @glass-text-muted;
-                            padding: 0px 5px;
-
-                            span {
-                                font-size: 9pt;
-                            }
-                        }
-                    }
-
-                    .right {
-                        display: inline;
-                        right: 0;
-                        position: absolute;
-
-
-                        .edit {
-                            display: inline;
-                            padding: 0px 5px;
-
-                            .ButtonGroup {
-                                width: unset;
-                            }
-
-                            .ButtonGroup:not(.open) {
-                                opacity: 0;
-                            }
-
-                            .Button:hover,
-                            .Button:focus {
-                                background: rgba(255, 255, 255, 0.15);
-                                color: @glass-text;
-                                border-radius: 6px;
-                            }
-
-                            .open>.Button {
-                                background: rgba(255, 255, 255, 0.15) !important;
-                                color: @glass-text !important;
-                                border-radius: 6px;
-                            }
-
-                            .Button--icon {
-                                width: 24px !important;
-                                height: 24px !important;
-                                padding: 0;
-                                text-align: center;
-                            }
-                        }
-
-                        .timestamp {
-                            display: inline;
-                            color: @glass-text-muted;
-                            cursor: pointer;
-                            padding-right: 5px;
-                            text-align: right;
-                            white-space: nowrap;
-                            font-size: 12px;
-                            overflow: hidden;
-                            text-overflow: ellipsis;
-                        }
-                    }
-                }
-
-                .message p,
-                .message div:not(.LoadingIndicator) {
-                    display: inline;
-                    margin: 0;
-                    padding: 0;
-                }
-            }
-        }
-    }
-
+  }
 }
