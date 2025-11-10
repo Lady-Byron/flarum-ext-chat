@@ -411,7 +411,7 @@ export default class ChatState {
     if (!chatModel) return;
 
     const list = this.getChatMessages((m) => m.chat?.() == chatModel);
-    if ((notify || chatModel.removed_at?.()) && model.id?.() && list[list.length - 1] === model) {
+    if (model.id?.() && list[list.length - 1] === model) {
       this.setRelationship(chatModel, 'last_message', model); // 维护 last_message
       const vp = this.getViewportState(chatModel);
       if (vp) vp.newPushedPosts = true;
@@ -726,6 +726,8 @@ export default class ChatState {
         const chatModel = model.chat?.();
         if (chatModel) {
           this.setRelationship(chatModel, 'last_message', model);
+          const vp = this.getViewportState(chatModel);
+          if (vp) vp.newPushedPosts = true;
         }
       },
       () => {
