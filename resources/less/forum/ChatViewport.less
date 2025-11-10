@@ -109,4 +109,31 @@
       }
       .message [controls]{max-width:100% !important;width:100% !important;height:auto !important;}
       /* 嵌入媒体 */
-      .message iframe,.message
+      .message iframe,.message embed,.message object{max-width:100% !important;width:100% !important;height:auto !important;border-radius:8px;display:block !important;box-sizing:border-box !important;}
+      /* 链接 */
+      .message a{cursor:pointer;color:rgba(0,122,255,.8);text-decoration:none;font-weight:500;&:hover{color:rgba(0,122,255,1);} }
+
+      /* 工具条（放大昵称 + 固定高度，避免与气泡重叠） */
+      .toolbar{position:relative;min-height:20px;padding-bottom:2px;
+        .name{display:inline;color:@glass-text;font-weight:700;cursor:pointer;font-size:15px;}
+        .labels{display:inline;opacity:1; .icon{display:inline-block;color:@glass-text-muted;padding:0 5px; span{font-size:9pt;} } }
+        .right{display:inline;position:absolute;top:0;} /* 具体左右由上面的 mine/others 决定 */
+        .timestamp{display:inline;color:@glass-text-muted;cursor:pointer;text-align:right;white-space:nowrap;font-size:12px;overflow:hidden;text-overflow:ellipsis;}
+        .edit{
+          display:inline;padding:0 5px;
+          .ButtonGroup{width:unset;} .ButtonGroup:not(.open){opacity:0;}
+          .Button:hover,.Button:focus{background:rgba(255,255,255,.15);color:@glass-text;border-radius:6px;}
+          .open>.Button{background:rgba(255,255,255,.15) !important;color:@glass-text !important;border-radius:6px;}
+          .Button--icon{width:24px !important;height:24px !important;padding:0;text-align:center;}
+        }
+      }
+
+      /* 旧渲染兼容：默认把 message 内的块元素并排为行内 */
+      .message p, .message div:not(.LoadingIndicator){display:inline;margin:0;padding:0;}
+    }
+  }
+
+  /* 移动端：放宽最大宽度 */
+  @media @phone { .wrapper{ --bubble-max:85%; } }
+}
+
