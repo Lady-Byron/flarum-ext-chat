@@ -7,6 +7,8 @@
 // - [FIX] 输入框清空：inputClear() 使用空串并同步清空本地草稿，直接写入 DOM value
 // 其余逻辑保持不变（草稿存取 / 粘底滚动由 ChatViewport 承担）
 
+// 不改后端：创建消息一律 POST /chatmessages，并在 data.attributes.chat_id 中传会话 ID。
+
 import app from 'flarum/forum/app';
 import Stream from 'flarum/common/utils/Stream';
 import Model from 'flarum/common/Model';
@@ -14,11 +16,7 @@ import Model from 'flarum/common/Model';
 export default class ViewportState {
   loadingSend = false;
 
-  scroll = {
-    autoScroll: true,
-    oldScroll: 0,
-  };
-
+  scroll = { autoScroll: true, oldScroll: 0 };
   loading = false;
   loadingQueries = {};
 
@@ -31,7 +29,6 @@ export default class ViewportState {
   messagesFetched = false;
 
   constructor(params) {
-    // [FIX] 保存当前会话模型，供发送/重发使用
     this.model = params?.model || null;
 
     if (params?.model) {
@@ -40,20 +37,15 @@ export default class ViewportState {
     }
   }
 
-  chatStorage = {
-    key: null,
-    draft: null,
-  };
+  chatStorage = { key: null, draft: null };
 
   initChatStorage(model) {
     if (!model || !model.id) return;
-
     this.chatStorage.key = `neonchat.viewport${model.id()}`;
     try {
       const parsed = JSON.parse(localStorage.getItem(this.chatStorage.key));
       if (parsed) this.chatStorage.draft = parsed.draft ?? '';
     } catch (e) {
-      // eslint-disable-next-line no-console
       console.warn('Error parsing chat storage:', e);
       this.chatStorage.draft = '';
     }
@@ -65,14 +57,12 @@ export default class ViewportState {
 
   setChatStorageValue(key, value) {
     if (!this.chatStorage.key) return;
-
     try {
       const cached = JSON.parse(localStorage.getItem(this.chatStorage.key)) ?? {};
       cached[key] = value;
       localStorage.setItem(this.chatStorage.key, JSON.stringify(cached));
       this.chatStorage[key] = value;
     } catch (e) {
-      // eslint-disable-next-line no-console
       console.warn('Error setting chat storage value:', e);
     }
   }
@@ -98,7 +88,7 @@ export default class ViewportState {
       document.querySelector('.NeonChatFrame #chat-input') ||
       document.querySelector('.ChatViewport #chat-input') ||
       document.getElementById('chat-input');
-    
+
     if (!el) {
       console.warn('Chat input element not found');
       return null;
@@ -112,7 +102,7 @@ export default class ViewportState {
 
     if (!trimmed || this.loadingSend) return;
 
-    // 编辑已存在消息
+    // 编辑模式
     if (this.messageEditing) {
       const model = this.messageEditing;
       if ((model.content || '').trim() !== (model.oldContent || '').trim()) {
@@ -124,15 +114,14 @@ export default class ViewportState {
       return;
     }
 
-    // [FIX] 获取会话模型：优先用构造时注入的 this.model，兜底取当前激活会话
+    // 取当前会话
     const chatModel = this.model || app.chat.getCurrentChat();
     if (!chatModel || !chatModel.id?.()) {
-      // eslint-disable-next-line no-console
       console.warn('[neon-chat] No active chat model when sending message.');
       return;
     }
 
-    // 发送新消息（不经预览：直接创建模型 → 乐观插入 → 异步保存）
+    // 创建“乐观消息”并提交（创建：POST /chatmessages）
     const model = app.store.createRecord('chatmessages');
     model.pushData({
       type: 'chatmessages',
@@ -143,18 +132,14 @@ export default class ViewportState {
       },
     });
 
-    // 兼容 ChatState.postChatMessage 仍读取 model.content 的旧逻辑
+    // 老逻辑兼容：render 用
     model.content = trimmed;
 
-    // [FIX] 给乐观消息一个稳定临时 key，等待后端回写 id() 再替换
+    // 临时 key（等待后端回写 id）
     model.tempKey = `tmp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
-    // [FIX] 关键：为 apiEndpoint() 提供 chatId，命中 POST /chatmessages/{chatId}
+    // 关键：后端从 body 取 chat_id
     model.pushAttributes({ chat_id: chatModel.id?.() });
-
-    // [FIX] 关键：保证在 save 前 model.chat() 返回 Chat 模型（避免仅有 identifier 时退回集合端点）
-    // eslint-disable-next-line no-unused-vars
-    model.chat = () => chatModel;
 
     app.chat.insertChatMessage(model); // 乐观回显
     this.messagePost(model);           // 异步保存
@@ -174,9 +159,7 @@ export default class ViewportState {
       this.input.content(model.oldContent);
       inputElement.value = this.input.content();
       inputElement.focus();
-      if (app.chat.input?.resizeInput) {
-        app.chat.input.resizeInput();
-      }
+      if (app.chat.input?.resizeInput) app.chat.input.resizeInput();
     }
 
     m.redraw();
@@ -194,16 +177,10 @@ export default class ViewportState {
   }
 
   messageResend(model) {
-    // 兜底：离线消息重发时确保 chat 关系与 chat_id 可用
+    // 兜底：离线消息重发时确保 chat_id 可用（创建端点依赖它）
     const chatModel = this.model || app.chat.getCurrentChat();
-    if (chatModel) {
-      if (!model.chat?.()) {
-        // eslint-disable-next-line no-unused-vars
-        model.chat = () => chatModel;
-      }
-      if (!model.data?.attributes?.chat_id) {
-        model.pushAttributes({ chat_id: chatModel.id?.() });
-      }
+    if (chatModel && !model.data?.attributes?.chat_id) {
+      model.pushAttributes({ chat_id: chatModel.id?.() });
     }
     this.messagePost(model);
   }
@@ -211,7 +188,6 @@ export default class ViewportState {
   messagePost(model) {
     this.loadingSend = true;
     m.redraw();
-
     return app.chat.postChatMessage(model).then(
       () => {
         this.loadingSend = false;
@@ -225,24 +201,17 @@ export default class ViewportState {
   }
 
   inputClear() {
-    // 长度/行数复位
     this.input.messageLength = 0;
     this.input.rows = 1;
-
-    // 关键：不要用 null，用空字符串，确保 DOM value 会被真正清空
     this.input.content('');
-
-    // 同步清空本地草稿存储与内存缓存
     this.setChatStorageValue('draft', '');
     this.input.lastDraft = '';
 
-    // 直接清空当前 textarea 的值，避免任何渲染竞争
     const el = this.getChatInput();
     if (el) {
       el.value = '';
       el.rows = this.input.rows;
     }
-
     m.redraw();
   }
 
@@ -251,7 +220,6 @@ export default class ViewportState {
     if (!app.session.user) return;
 
     this.input.content((this.input.content() || '') + ` @${user.username()} `);
-
     const input = this.getChatInput();
     if (input) input.focus();
   }
