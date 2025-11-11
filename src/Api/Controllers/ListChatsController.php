@@ -38,7 +38,9 @@ class ListChatsController extends AbstractListController
     {
         $actor = $request->getAttribute('actor');
         $include = $this->extractInclude($request);
-        $scope = Arr::get($request->getQueryParams(), 'scope'); // 管理员可用 '?scope=all'
+
+        // 管理员用 scope=all：列出全部聊天
+        $scope = $actor->isAdmin() ? 'all' : null;
 
         return $this->chats->queryVisible($actor, $scope)->get()->load($include);
     }
