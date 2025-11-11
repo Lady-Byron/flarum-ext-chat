@@ -8,44 +8,76 @@
 
 namespace Xelson\Chat\Commands;
 
+use Carbon\Carbon;
+use Illuminate\Contracts\Events\Dispatcher;
 use Xelson\Chat\ChatRepository;
-use Xelson\Chat\MessageRepository;
+use Xelson\Chat\Event\Message\Saved;
+use Xelson\Chat\Message;
+use Xelson\Chat\MessageValidator;
 
-class FetchMessageHandler
+class PostMessageHandler
 {
     /**
-     * @var MessageRepository
+     * @var MessageValidator
      */
-    protected $messages;
+    protected $validator;
 
     /**
-     * @param MessageRepository             $messages
-     * @param ChatRepository                $chats
+     * @param MessageValidator      $validator
+     * @param ChatRepository        $chats
+     * @param Dispatcher            $events
      */
     public function __construct(
-        MessageRepository $messages,
-        ChatRepository $chats) 
-    {
-        $this->messages  = $messages;
+        MessageValidator $validator,
+        ChatRepository $chats,
+        Dispatcher $events
+    ) {
+        $this->validator = $validator;
         $this->chats = $chats;
+        $this->events = $events;
     }
 
     /**
      * Handles the command execution.
      *
+     * @param PostMessage $command
      * @return null|string
-     *
      */
-    public function handle(FetchMessage $command)
+    public function handle(PostMessage $command)
     {
         $actor = $command->actor;
-        $query = $command->query;
- 
-        $chat = $this->chats->findOrFail($command->chat_id, $actor);
+        $attributes = $command->data['attributes'];
+        $ip_address = $command->ip_address;
 
-        if(is_array($query)) $messages = $this->messages->queryVisible($chat, $actor)->whereIn('id', $query)->get();
-        else $messages = $this->messages->fetch($query, $actor, $chat);
+        $content = $attributes['message'];
+        $chat_id = $attributes['chat_id'];
 
-        return $messages;
+        $chat = $this->chats->findOrFail($chat_id, $actor);
+
+        $actor->assertCan('xelson-chat.permissions.chat');
+
+        $chatUser = $chat->getChatUser($actor);
+
+        $actor->assertPermission($chatUser && !$chatUser->removed_at);
+
+        $message = Message::build(
+            $content,
+            $actor->id,
+            Carbon::now(),
+            $chat->id,
+            $ip_address
+        );
+
+        $this->validator->assertValid($message->getDirty());
+
+        $message->save();
+
+        $chat->users()->updateExistingPivot($actor->id, ['readed_at' => Carbon::now()]);
+
+        $this->events->dispatch(
+            new Saved($message, $actor, $command->data, true)
+        );
+
+        return $message;
     }
 }
