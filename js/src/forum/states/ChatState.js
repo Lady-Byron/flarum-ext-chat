@@ -13,9 +13,15 @@
 // [CHANGED] J. deleteChat 按 id 过滤
 //
 // === 本次新增（关键修复）===
-// [ADDED] apiFetchChats：拉取会话列表；无论成功失败都关闭 chatsLoading；按 id 去重并恢复上次选中
-// [FIX]   renderChatMessage 的“提及修复”改为原生 <a> 替换，避免在 Mithril 子树内再次 m.render 造成 NotFoundError
-//         且修正 @ 链接：优先 data-id → username → 当前会话参与者 → 全局已加载用户，生成正确的 /u/<username>
+// [+] 权限门禁：isAdmin / isMember / isKicked / canView / canPost
+//     - 公共频道（type=1）：未加入可见但不可读/不可发；被踢（removed_by != me）不可见
+//     - 私聊/群聊（type=0）：仅成员可见（离开后不可见）；被踢当然不可见
+//     - 管理员：可旁观（可见/可读），但不自动允许发言；要发言需加入
+// [+] getChats：实现上面的“列表可见性”规则（搜索时仍可搜到以便自助加入）
+// [+] apiFetchChatMessages：非 canView 短路，不拉取
+// [+] apiReadChat：仅成员上报已读（管理员旁观不回执）
+// [+] postChatMessage：仅 canPost 发送，其余短路
+// [FIX] renderChatMessage 的“提及修复”：原生 <a> 替换，避免在 Mithril 子树内再次 m.render 造成 NotFoundError
 
 import app from 'flarum/forum/app';
 import Model from 'flarum/common/Model';
@@ -35,7 +41,6 @@ audio.volume = 0.5;
 
 export default class ChatState {
   constructor() {
-
     // [MENTION] 每会话的本地 @ 计数（前端内存，不序列化）
     this.atCounters = {};
 
@@ -77,6 +82,52 @@ export default class ChatState {
 
     /** @type {Record<number|string, ViewportState>} */
     this.viewportStates = {};
+  }
+
+  /* --------------------------------
+   *  权限/成员状态工具
+   * -------------------------------- */
+  meId() {
+    return app.session?.user?.id?.();
+  }
+
+  isAdmin() {
+    const u = app.session?.user;
+    if (!u) return false;
+    // 兼容 isAdmin() 方法和 attribute('isAdmin') 两种
+    return !!(u.isAdmin?.() || u.attribute?.('isAdmin'));
+  }
+
+  isPublic(chat) {
+    return chat?.type?.() === 1;
+  }
+
+  isMember(chat) {
+    // 只要有 pivot 并且未被移除，即认为是成员
+    return !!chat?.joined_at?.() && !chat?.removed_at?.();
+  }
+
+  isKicked(chat) {
+    // 被动移出：removed_at 且 removed_by != 我
+    const removedAt = chat?.removed_at?.();
+    if (!removedAt) return false;
+    const by = chat?.removed_by?.();
+    const me = this.meId();
+    // 无 removed_by（旧数据）按被动处理
+    return by ? String(by) !== String(me) : true;
+  }
+
+  canView(chat) {
+    if (!chat) return false;
+    if (this.isAdmin()) return true;               // 管理员旁观
+    if (this.isMember(chat)) return true;          // 成员可读
+    return false;                                   // 其余一律不可读（含公共频道未加入）
+  }
+
+  canPost(chat) {
+    if (!chat) return false;
+    // 只有成员能发言；管理员若想发言也需先加入
+    return this.isMember(chat) && !!this.permissions.post;
   }
 
   /* --------------------------------
@@ -144,7 +195,7 @@ export default class ChatState {
     const chat = this.pushOne(packet.response?.chat);
 
     // 统一用 id 值比较“是否本人”
-    const meId = app.session.user?.id?.(); // [CHANGED] A
+    const meId = this.meId(); // [CHANGED] A
 
     const actions =
       packet.response?.actions ||
@@ -153,7 +204,7 @@ export default class ChatState {
           packet.response.message?.attributes?.actions)) ||
       {};
 
-    // 屏蔽：对已离开的公开频道（type=1）不弹
+    // 屏蔽：对已离开的公开频道（type=1）不弹（保险；实际上我们已不订阅 public）
     if (message && message.chat?.() && message.chat().type?.() === 1 && message.chat().removed_at?.()) {
       return;
     }
@@ -265,11 +316,30 @@ export default class ChatState {
   }
 
   /* --------------------------------
-   *  会话集合/排序/检索
+   *  会话集合/排序/检索（可见性规则）
    * -------------------------------- */
   getChats() {
     const needle = (this.q() || '').toLowerCase();
-    return this.chats.filter((chat) => (needle && chat.matches(needle)) || (!needle && !chat.removed_at?.()));
+    const me = this.meId();
+
+    return this.chats.filter((chat) => {
+      // 搜索时：任何匹配都显示（便于自助回归/加入）
+      if (needle && chat.matches?.(needle)) return true;
+      if (needle) return false;
+
+      const type = chat.type?.();
+      const removedAt = chat.removed_at?.();
+      const removedBy = chat.removed_by?.();
+
+      // 公共频道：始终可见（目录），但若被踢（removed_by != me）不可见
+      if (type === 1) {
+        if (removedAt && removedBy && String(removedBy) !== String(me)) return false; // 被踢隐藏
+        return true; // 未加入/主动退出都可见
+      }
+
+      // 私聊/群聊：仅“仍是成员”的可见
+      return !removedAt;
+    });
   }
 
   getChatsSortedByLastUpdate() {
@@ -356,7 +426,7 @@ export default class ChatState {
 
     // [MENTION] 进入会话视为已关注到 @ 提醒 → 本地清零
     if (model) this.clearAtUnread(model);
-    
+
     try {
       m.redraw.sync();
     } catch (e) {
@@ -374,7 +444,6 @@ export default class ChatState {
   getCurrentChat() {
     return this.curChat;
   }
-
 
   // [MENTION] 取/增/清 指定会话的 @ 未读
   getAtUnread(chat) {
@@ -433,7 +502,7 @@ export default class ChatState {
       if (chatModel) {
         // [MENTION] 若这条新消息 @ 了“我”，为该会话的本地 @ 计数 +1
         if (this.messageIsMention(model)) this.incAtUnread(chatModel);
-        
+
         chatModel.isNeedToFlash = true;
         const current = parseInt(chatModel.unreaded?.() ?? 0, 10) || 0;
         chatModel.pushAttributes({ unreaded: current + 1 });
@@ -717,6 +786,9 @@ export default class ChatState {
    *  阅读回执 / 拉取消息
    * -------------------------------- */
   apiReadChat(chat, messageOrDate) {
+    // 仅“成员”回执；管理员旁观不回执
+    if (!this.isMember(chat)) return;
+
     if (this.readingTimeout) clearTimeout(this.readingTimeout);
 
     let timestamp;
@@ -733,6 +805,9 @@ export default class ChatState {
   }
 
   apiFetchChatMessages(model, query, options = {}) {
+    // 非可读则短路（管理员可旁观视为可读）
+    if (!this.canView(model)) return Promise.resolve();
+
     const viewport = this.getViewportState(model);
     if (!viewport) return;
 
@@ -772,7 +847,7 @@ export default class ChatState {
   onChatMessageClicked(eventName, model) {
     if (!model || !app.session.user) return;
 
-    const meId = app.session.user.id?.();
+    const meId = this.meId();
     const chat = model.chat?.();
     if (!chat) return;
 
@@ -806,8 +881,14 @@ export default class ChatState {
   postChatMessage(model) {
     if (!model) return Promise.resolve();
 
+    const chatModel = model.chat?.();
+    if (!this.canPost(chatModel)) {
+      // 前端兜底短路；UI 上 ChatInput 会隐藏发送区域并给出【加入聊天】
+      return Promise.resolve();
+    }
+
     const text = (model.content ?? model.message?.() ?? '').toString();
-    return model.save({ message: text, created_at: new Date(), chat_id: model.chat?.().id?.() }).then(
+    return model.save({ message: text, created_at: new Date(), chat_id: chatModel.id?.() }).then(
       (r) => {
         if (r?.data) {
           model.pushData(r.data);
@@ -818,7 +899,6 @@ export default class ChatState {
         model.isNeedToFlash = true;
         model.isEditing = false;
 
-        const chatModel = model.chat?.();
         if (chatModel) {
           this.setRelationship(chatModel, 'last_message', model);
           const vp = this.getViewportState(chatModel);
