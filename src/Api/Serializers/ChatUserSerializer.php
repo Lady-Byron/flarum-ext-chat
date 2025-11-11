@@ -1,40 +1,41 @@
 <?php
 /*
  * This file is part of xelson/flarum-ext-chat
- *
- * For the full copyright and license information, please view the LICENSE
- * file that was distributed with this source code.
  */
 
 namespace Xelson\Chat\Api\Serializers;
 
-use Flarum\User\User;
 use Xelson\Chat\Chat;
 
 class ChatUserSerializer extends ChatSerializer
 {
-    /**
-     * Get the default set of serialized attributes for a model.
-     *
-     * @param object|array $model
-     * @return array
-     */
     protected function getDefaultAttributes($chat): array
     {
         $attributes = $chat->getAttributes();
-		if($chat->created_at) $attributes['created_at'] = $this->formatDate($chat->created_at);
-		
-		$chatUser = $chat->getChatUser($this->actor);
-		if($chatUser)
-		{
-            $attributes['role'] = $chatUser->role;
-			$attributes['joined_at'] = $this->formatDate($chatUser->joined_at);
-			$attributes['readed_at'] = $this->formatDate($chatUser->readed_at);
-			$attributes['removed_at'] = $this->formatDate($chatUser->removed_at);
-			$attributes['removed_by'] = $chatUser->removed_by;
-            $attributes['unreaded'] = $chat->unreadedCount($chatUser);
+
+        if ($chat->created_at) {
+            $attributes['created_at'] = $this->formatDate($chat->created_at);
         }
 
+        $actor = $this->actor;
+        $pivot = $chat->getChatUser($actor);
+
+        $isMember = $pivot && !$pivot->removed_at;
+        $attributes['is_member'] = (bool) $isMember;
+
+        // 管理员可旁观
+        $attributes['can_view'] = $isMember || ($actor && $actor->isAdmin());
+
+        if ($isMember) {
+            $attributes['role']       = $pivot->role;
+            $attributes['joined_at']  = $this->formatDate($pivot->joined_at);
+            $attributes['readed_at']  = $this->formatDate($pivot->readed_at);
+            $attributes['removed_at'] = $this->formatDate($pivot->removed_at);
+            $attributes['removed_by'] = $pivot->removed_by;
+            $attributes['unreaded']   = $chat->unreadedCount($pivot);
+        }
+
+        // 非成员（公共频道 never/left）不暴露成员专属字段与未读计数
         return $attributes;
     }
 }
