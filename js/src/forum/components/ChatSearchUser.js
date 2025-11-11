@@ -1,7 +1,8 @@
-// js/src/forum/components/ChatSearchUser.js
 // 兼容修复：给 Search Source 自动补上 isCached(query)（以及缺省 results: Map）
 // - 不污染全站搜索：改用传入的 this.attrs.state（getValue/setValue/getInitialSearch）
 // - 仅当 canSearchUsers !== false 时启用用户搜索
+// - 汇聚子 source 的 searching → 在输入框上显示 Loading
+// - 失焦/点击外部自动收起下拉
 
 import app from 'flarum/forum/app';
 import Search from 'flarum/common/components/Search';
@@ -12,32 +13,19 @@ import icon from 'flarum/common/helpers/icon';
 
 import UsersSearchSource from './UsersSearchResults';
 
-// —— 给任意 source 打补丁：确保有 results 与 isCached(query) —— //
 function withCacheShim(source) {
-  // results：核心实现通常是 Map<string, any[]>；若不存在就给个 Map
   if (!source.results) {
-    try {
-      source.results = new Map();
-    } catch {
-      source.results = {}; // 极端兜底
-    }
+    try { source.results = new Map(); } catch { source.results = {}; }
   }
-
-  // isCached：返回当前 query 是否已有结果
   if (typeof source.isCached !== 'function') {
     source.isCached = (query) => {
       const q = String(query ?? '');
       const r = source.results;
-
-      // Map 情况
       if (r && typeof r.has === 'function') return r.has(q);
       if (r && typeof r.get === 'function') return r.get(q) !== undefined;
-
-      // 普通对象兜底
       return !!(r && r[q]);
     };
   }
-
   return source;
 }
 
@@ -45,40 +33,59 @@ export default class ChatSearchUser extends Search {
   oninit(vnode) {
     super.oninit(vnode);
 
-    // 使用传入的 state；若未传入，给一个最小实现，避免读写报错
     this.state =
-      this.attrs.state ??
-      {
+      this.attrs.state ?? {
         getValue: () => '',
         setValue: () => {},
         getInitialSearch: () => '',
       };
 
-    this._sources = null; // 懒加载一次
+    this._sources = null;   // 懒构建
+    this.hasFocus = false;  // 控制下拉显隐
   }
 
-  // 只在首次使用时构建，且对 source 打补丁
+  oncreate(vnode) {
+    super.oncreate(vnode);
+    // 点击外部收起
+    this.__clickAway = (e) => {
+      if (!this.element) return;
+      if (!this.element.contains(e.target)) {
+        this.hasFocus = false;
+        m.redraw();
+      }
+    };
+    document.addEventListener('click', this.__clickAway, true);
+  }
+
+  onremove() {
+    if (this.__clickAway) {
+      document.removeEventListener('click', this.__clickAway, true);
+      this.__clickAway = null;
+    }
+    super.onremove();
+  }
+
   buildSources() {
     const items = new ItemList();
-
-    // 仅当 canSearchUsers !== false 时开启用户搜索
     const can = app.forum.attribute('canSearchUsers');
     if (can !== false) {
       items.add('users', withCacheShim(new UsersSearchSource({ state: this.state })));
     }
-
     this._sources = items.toArray();
   }
-
-  // 兼容 Search 基类
-  updateMaxHeight() {}
 
   clear() {
     this.state.setValue?.('');
   }
 
+  // 聚合所有 source 的 searching 状态
+  get loadingSources() {
+    if (!this._sources) return false;
+    return this._sources.some((s) => !!s.searching);
+  }
+
   view() {
-    // 同步初始值（只在空时灌入一次）
+    // 初始化默认值
     const currentSearch = this.state.getInitialSearch?.() || '';
     if (!this.state.getValue?.()?.length) {
       this.state.setValue?.(currentSearch || '');
@@ -87,13 +94,15 @@ export default class ChatSearchUser extends Search {
     if (!this._sources) this.buildSources();
     if (!this._sources.length) return <div></div>;
 
+    const val = this.state.getValue?.() || '';
+
     return (
       <div
         className={
           'Search ' +
           classList({
             open: this.hasFocus,
-            active: !!this.state.getValue?.(),
+            active: !!val,
             loading: !!this.loadingSources,
           })
         }
@@ -105,13 +114,14 @@ export default class ChatSearchUser extends Search {
             placeholder={app.translator.trans(
               'xelson-chat.forum.chat.list.add_modal.search.placeholder'
             )}
-            value={this.state.getValue?.()}
+            value={val}
             oninput={(e) => this.state.setValue?.(e.target.value)}
             onfocus={() => (this.hasFocus = true)}
+            onblur={() => setTimeout(() => { this.hasFocus = false; m.redraw(); }, 100)} // 留点时间给 click
           />
           {this.loadingSources ? (
             <LoadingIndicator size="tiny" className="Button Button--icon Button--link" />
-          ) : this.state.getValue?.() ? (
+          ) : val ? (
             <button
               className="Search-clear Button Button--icon Button--link"
               onclick={this.clear.bind(this)}
@@ -123,12 +133,13 @@ export default class ChatSearchUser extends Search {
           )}
         </div>
 
-        {this.state.getValue?.() && this.hasFocus ? (
+        {val && this.hasFocus ? (
           <ul className="Dropdown-menu Dropdown--Users Search-results">
-            {this._sources.map((source) => source.view(this.state.getValue?.()))}
+            {this._sources.map((source) => source.view(val))}
           </ul>
         ) : null}
       </div>
     );
   }
 }
+
