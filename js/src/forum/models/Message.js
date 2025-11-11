@@ -1,8 +1,8 @@
 // js/src/forum/models/Message.js
 //
-// [CHANGED] apiEndpoint() 返回“相对路径”，避免与 app.request 的 apiUrl 叠加；
-//           创建时命中非常规 POST /chatmessages/{chatId}；更新/删除走 /chatmessages/{id}。
-// [UNCHANGED] 其余 attrs/relations 保持不变，兼容 Flarum 1.8。
+// 回到原始通路：新建 => POST /chatmessages（集合端点，body.attributes 里带 chat_id）
+// 已存在 => /chatmessages/{id}（用于 PATCH/DELETE）
+// 其它属性/关系保持不变
 
 import Model from 'flarum/common/Model';
 
@@ -10,11 +10,12 @@ export default class Message extends Model {
   apiEndpoint() {
     const type = 'chatmessages';
 
-    // 已存在 -> /chatmessages/{message_id}
-    const id = (typeof this.id === 'function' ? this.id() : this.data?.id) || null;
+    // 已存在：/chatmessages/{id}
+    const id =
+      (typeof this.id === 'function' ? this.id() : this.data?.id) || null;
     if (this.exists && id) return `/${type}/${id}`;
 
-    // 新建 -> /chatmessages  （后端从 data.attributes.chat_id 取 chat_id）
+    // 新建：集合端点（chat_id 通过 body.attributes 提交）
     return `/${type}`;
   }
 }
