@@ -1,10 +1,10 @@
 // js/src/forum/components/ChatEditModal.js
-// [FIXES SUMMARY]
-// - 成员“下拉菜单全体同时展开” -> 仅当前这一条展开：
-//   1) 在 oncreate 中注册捕获级 click 监听，只接管 `.Button--mention-edit`，
-//      只切换“最近的 .Dropdown”，并关闭同一 Modal 里的其它已打开下拉；
-//   2) 在 Dropdown 根上阻止冒泡，避免外层误触发。
-// - 其它你已有的 1.8 兼容与空值守护保持不变。
+// 修正要点：
+// 1) 成员“下拉只开当前一条”不再阻断 Dropdown 自己的点击逻辑：
+//    - 捕获阶段仅关闭其它已开的下拉，不阻止事件传播；让当前 Dropdown 正常处理“打开/关闭”
+// 2) isModer / isCreator 在“我已退出”时一律判定为 false，避免已退成员还能看到管理按钮
+// 3) onsubmit 的 relationships.users 改为 JSON:API 资源标识符数组，避免前端 store 差异
+// 4) 其它 1.8 兼容与空值守护保持不变
 
 import app from 'flarum/forum/app';
 import Button from 'flarum/common/components/Button';
@@ -50,15 +50,10 @@ export default class ChatEditModal extends ChatModal {
   oncreate(vnode) {
     super.oncreate(vnode);
 
-    // === 修复：拦截成员下拉按钮，只切换“当前这一条” ===
+    // —— 修复“只开当前一条”：捕获阶段仅关闭其它 open，下拉本身的开关交给 Dropdown 组件处理 ——
     this.__dropdownFixHandler = (e) => {
       const btn = e.target && e.target.closest('.Button--mention-edit');
       if (!btn || !btn.isConnected) return;
-
-      // 仅当前这一条
-      e.preventDefault();
-      e.stopPropagation();
-      if (e.stopImmediatePropagation) e.stopImmediatePropagation();
 
       const modal = btn.closest('.Modal') || document;
       const currentDropdown = btn.closest('.Dropdown');
@@ -68,16 +63,14 @@ export default class ChatEditModal extends ChatModal {
         if (d !== currentDropdown) d.classList.remove('open');
       });
 
-      // 切换“当前这一条”
-      if (currentDropdown) currentDropdown.classList.toggle('open');
+      // 不调用 preventDefault / stopPropagation：
+      // 让 Dropdown 内部的点击逻辑正常运行，从而正确维护其内部状态
     };
 
-    // 捕获阶段抢先处理，避免外层监听误触发
     document.addEventListener('click', this.__dropdownFixHandler, true);
   }
 
   onremove() {
-    // 卸载监听，防止内存泄漏
     if (this.__dropdownFixHandler) {
       document.removeEventListener('click', this.__dropdownFixHandler, true);
       this.__dropdownFixHandler = null;
@@ -115,7 +108,8 @@ export default class ChatEditModal extends ChatModal {
       color: this.getInput().color(),
       icon: this.getInput().icon(),
       users: { added, removed, edited },
-      relationships: { users: this.getSelectedUsers() },
+      // 🔧 关系用 JSON:API 标识符，避免不同 Store 实现的兼容性问题
+      relationships: { users: { data: byId(this.getSelectedUsers()) } },
     });
 
     this.hide();
@@ -137,13 +131,19 @@ export default class ChatEditModal extends ChatModal {
 
   isModer(user) {
     if (!user) return false;
+    // 🚫 我已退出时不具备本地管理身份
+    if (this.isLocalLeaved) return false;
     if (this.roleOf(user) > 0) return true;
     return this.isCreator(user);
   }
 
   isCreator(user) {
+    if (!user) return false;
     const p = user && user.chat_pivot && user.chat_pivot(this.model.id?.());
-    // 2 = 创建者；若无 pivot，退回到是否站点管理员
+    // 🚫 退出后不能再作为“创建者”获得前端管理权限
+    if (p && p.removed_at?.()) return false;
+
+    // 2 = 创建者；若模型没有记录 creator，则站点管理员视为具备
     return (
       (p && p.role && p.role() == 2) ||
       (!this.model.creator?.() &&
@@ -188,7 +188,7 @@ export default class ChatEditModal extends ChatModal {
 
     return (
       <Dropdown
-        // 阻止事件冒泡，避免外层监听误触发
+        // 仍然阻止冒泡，避免外层误触发，但不影响我们在 document 捕获阶段做的“关闭其它下拉”
         onclick={(e) => e.stopPropagation()}
         buttonClassName="Button Button--icon Button--flat Button--mention-edit"
         menuClassName="Dropdown-menu--top Dropdown-menu--bottom Dropdown-menu--left Dropdown-menu--right"
@@ -213,7 +213,6 @@ export default class ChatEditModal extends ChatModal {
   }
 
   userMentionContent(user) {
-    // 包一层容器，未来若需要“点整块可开”时，可在此容器上精确定向
     return (
       <span className="UserMentionItem">
         {'@' + user.displayName()}
@@ -224,8 +223,6 @@ export default class ChatEditModal extends ChatModal {
     );
   }
 
-  // 若外部仍有“整块点击打开下拉”的历史代码，请确保它调用的是本方法，
-  // 且仅作用于当前这一条（此处已经避免全局触发）。
   userMentionOnClick(user, e) {
     e.stopPropagation();
     const root = e.currentTarget || e.target.closest('.UserMentionItem') || e.target;
@@ -356,16 +353,18 @@ export default class ChatEditModal extends ChatModal {
       this.model
         .save({
           users: { removed: [Model.getIdentifier(me)] },
-          relationships: { users: this.getSelectedUsers() },
+          relationships: { users: { data: this.getSelectedUsers().map(Model.getIdentifier) } },
         })
         .then(() => m.redraw());
     } else {
       // 未加入 -> 加入
-      this.getSelectedUsers().push(me);
+      if (!this.listHasUserById(this.getSelectedUsers(), me)) {
+        this.getSelectedUsers().push(me);
+      }
       this.model
         .save({
           users: { added: [Model.getIdentifier(me)] },
-          relationships: { users: this.getSelectedUsers() },
+          relationships: { users: { data: this.getSelectedUsers().map(Model.getIdentifier) } },
         })
         .then(() => m.redraw());
     }
