@@ -7,40 +7,49 @@ namespace Xelson\Chat;
 
 use Flarum\User\User;
 use Illuminate\Database\Eloquent\Builder;
-use Illuminate\Support\Facades\DB;
 
 class ChatRepository
 {
+    /**
+     * Base query for chats.
+     */
     public function query(): Builder
     {
         return Chat::query();
     }
 
     /**
-     * @param User   $actor
-     * @param string|null $scope 'all' 仅对管理员有效：列出全部
+     * Visible chats for actor.
+     *
+     * Rules:
+     * - Admin + scope=all  → list all.
+     * - Member (any type)  → visible when pivot exists and removed_at IS NULL.
+     * - Public channels (type=1) are additionally "discoverable" for:
+     *     * never joined (no pivot)
+     *     * left by self (pivot.removed_by = actor)
+     *   but NOT for:
+     *     * kicked (pivot.removed_by != actor AND removed_at NOT NULL)
+     *
+     * @param User        $actor
+     * @param string|null $scope  'all' for admins to list everything
      */
     public function queryVisible(User $actor, ?string $scope = null): Builder
     {
-        // 管理员 scope=all：列出全部
+        // Admin scope=all: list all chats
         if ($actor->isAdmin() && $scope === 'all') {
             return $this->query();
         }
 
         $actorId = (int) $actor->id;
 
-        // 成员可见（任意类型）：pivot 存在且未 removed
-        $memberIds = DB::table('neonchat_chat_user')
+        // Subquery: chats where actor is an active member
+        $memberIds = ChatUser::query()
             ->select('chat_id')
             ->where('user_id', $actorId)
             ->whereNull('removed_at');
 
-        // 公共频道额外可见：
-        // - never：无 pivot 记录
-        // - left：pivot 存在但 removed_by = 自己
-        // - member：已包含在上面的 memberIds
-        // - kicked：pivot.removed_by != 自己 且 removed_at 非空 → 不可见（排除）
-        $kickedIds = DB::table('neonchat_chat_user')
+        // Subquery: chats where actor was kicked (not self-left)
+        $kickedIds = ChatUser::query()
             ->select('chat_id')
             ->where('user_id', $actorId)
             ->whereNotNull('removed_at')
@@ -48,19 +57,26 @@ class ChatRepository
                 $q->whereNull('removed_by')->orWhere('removed_by', '!=', $actorId);
             });
 
-        return $this->query()->where(function (Builder $q) use ($memberIds, $kickedIds) {
-            // 1) 我是成员
-            $q->whereIn('id', $memberIds);
-        })->orWhere(function (Builder $q) use ($actorId, $kickedIds) {
-            // 2) 公共频道：可发现但排除 kicked
-            $q->where('type', 1)
-              ->whereNotIn('id', $kickedIds);
-        });
+        // Visible = active member OR (public channel AND not kicked)
+        $query = $this->query()
+            ->where(function (Builder $q) use ($memberIds) {
+                // 1) I'm an active member
+                $q->whereIn('id', $memberIds);
+            })
+            ->orWhere(function (Builder $q) use ($kickedIds) {
+                // 2) Public channel, but exclude "kicked"
+                $q->where('type', 1)
+                  ->whereNotIn('id', $kickedIds);
+            });
+
+        return $query;
     }
 
+    /**
+     * Find visible chat by id (admins bypass visibility).
+     */
     public function findOrFail(int $id, User $actor): Chat
     {
-        // 管理员无条件直通
         if ($actor->isAdmin()) {
             return $this->query()->findOrFail($id);
         }
@@ -68,4 +84,3 @@ class ChatRepository
         return $this->queryVisible($actor)->findOrFail($id);
     }
 }
-
