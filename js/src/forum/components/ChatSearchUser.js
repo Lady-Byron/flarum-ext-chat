@@ -30,6 +30,9 @@ function withCacheShim(source) {
 }
 
 export default class ChatSearchUser extends Search {
+  // 🔧 热补丁：给 loadingSources 加 setter，防止 “only a getter” 报错
+  get loadingSources() { return this.__loadingSources || false; }
+  set loadingSources(v) { this.__loadingSources = !!v; }
   oninit(vnode) {
     super.oninit(vnode);
 
