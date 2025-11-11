@@ -24,7 +24,8 @@ export default class Message extends Model {
 
     if (!chatId) {
       // 拿不到 chat_id：退回集合端点（便于排查；多数后端会 404）
-      console.warn('[xelson-chat] Missing chat_id when creating message; fallback POST /chatmessages (will likely 404).');
+      // 注：降低到 debug，减少生产环境控制台噪音
+      console.debug('[xelson-chat] Missing chat_id when creating message; fallback POST /chatmessages (will likely 404).');
       return `/${type}`;
     }
 
