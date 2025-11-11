@@ -453,6 +453,9 @@ export default class ChatViewport extends Component {
 
   reloadMessages() {
     if (!this.state.messagesFetched) {
+      // 未加入时不拉（管理员除外）
+      if (this.model?.removed_at?.() && !isAdmin()) return;
+      
       let query;
       if (this.model.unreaded()) {
         query = this.model.readed_at()?.toISOString() ?? new Date(0).toISOString();
