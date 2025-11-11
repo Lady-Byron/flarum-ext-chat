@@ -7,60 +7,65 @@ namespace Xelson\Chat;
 
 use Flarum\User\User;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Support\Facades\DB;
 
 class ChatRepository
 {
-    /**
-     * Get a new query builder for the chats table
-     *
-     * @return Builder
-     */
     public function query(): Builder
     {
         return Chat::query();
     }
 
     /**
-     * Query for chats visible to the given actor
-     *
-     * - 公共频道（type=1）对所有人可见
-     * - 私聊/群聊（type=0）仅参与者可见
-     *
-     * @param  User $actor
-     * @return Builder
+     * @param User   $actor
+     * @param string|null $scope 'all' 仅对管理员有效：列出全部
      */
-    public function queryVisible(User $actor): Builder
+    public function queryVisible(User $actor, ?string $scope = null): Builder
     {
-        $query = $this->query();
+        // 管理员 scope=all：列出全部
+        if ($actor->isAdmin() && $scope === 'all') {
+            return $this->query();
+        }
 
-        $query->where(function (Builder $q) use ($actor) {
-            // ORIGINAL ISSUE:
-            //   旧代码使用 ->get()->toArray() 传给 whereIn('id', ...)，得到的是二维数组
-            //   形如：[ ['chat_id'=>1], ['chat_id'=>2] ]，与 whereIn 期望的一维标量数组不匹配，
-            //   导致可见性过滤条件失效。
-            //
-            // FIX:
-            //   使用 pluck('chat_id')->all() 获取一维 ID 列表：[1,2,...]
-            $chatIds = ChatUser::where('user_id', $actor->id)->pluck('chat_id')->all();
+        $actorId = (int) $actor->id;
 
+        // 成员可见（任意类型）：pivot 存在且未 removed
+        $memberIds = DB::table('neonchat_chat_user')
+            ->select('chat_id')
+            ->where('user_id', $actorId)
+            ->whereNull('removed_at');
+
+        // 公共频道额外可见：
+        // - never：无 pivot 记录
+        // - left：pivot 存在但 removed_by = 自己
+        // - member：已包含在上面的 memberIds
+        // - kicked：pivot.removed_by != 自己 且 removed_at 非空 → 不可见（排除）
+        $kickedIds = DB::table('neonchat_chat_user')
+            ->select('chat_id')
+            ->where('user_id', $actorId)
+            ->whereNotNull('removed_at')
+            ->where(function ($q) use ($actorId) {
+                $q->whereNull('removed_by')->orWhere('removed_by', '!=', $actorId);
+            });
+
+        return $this->query()->where(function (Builder $q) use ($memberIds, $kickedIds) {
+            // 1) 我是成员
+            $q->whereIn('id', $memberIds);
+        })->orWhere(function (Builder $q) use ($actorId, $kickedIds) {
+            // 2) 公共频道：可发现但排除 kicked
             $q->where('type', 1)
-              ->orWhereIn('id', $chatIds);
+              ->whereNotIn('id', $kickedIds);
         });
-
-        return $query;
     }
 
-    /**
-     * Find a chat by ID (visible for actor)
-     *
-     * @param  int  $id
-     * @param  User $actor
-     * @return Chat
-     *
-     * @throws \Illuminate\Database\Eloquent\ModelNotFoundException
-     */
     public function findOrFail(int $id, User $actor): Chat
     {
+        // 管理员无条件直通
+        if ($actor->isAdmin()) {
+            return $this->query()->findOrFail($id);
+        }
+
         return $this->queryVisible($actor)->findOrFail($id);
     }
 }
+
