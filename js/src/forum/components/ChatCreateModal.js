@@ -4,7 +4,10 @@
 //       之前发送的是纯字符串 ID，后端在 `$u['type']` 处对字符串取下标导致 500。
 //       现改为使用 Model.getIdentifier(me) 生成 { type:'users', id:'...' }，并附带 relationships.users（更稳）。
 //
-// 其他说明（保持原有注释不变）：
+// [FIX] 创建会话：用 `type`(0=私聊/群聊, 1=频道) 与后端对齐；不要发送 isChannel（避免 400 invalid_parameter）
+// [FIX] 视图：`componentFormChat` 判断多人成员时使用 `getSelectedUsers()`，避免依赖父类内部字段
+//
+// 其他说明：
 // - 单聊优先复用/复归；否则按频道/群聊/单聊创建逻辑创建新会话。
 // - 新建会话时避免再嵌套 attributes:{...}，直接传顶层属性与 relationships。
 // - Flarum 1.8 路径已统一。
@@ -52,15 +55,15 @@ export default class ChatCreateModal extends ChatModal {
   }
 
   // 复归：只发 users.added = [meIdentifier]
-  // [FIX] 必须发送 JSON:API 资源标识对象，而不是纯字符串 ID；可选地附带 relationships.users
+  // 必须发送 JSON:API 资源标识对象，而不是纯字符串 ID；可选地附带 relationships.users
   rejoinExistingChat(existingChat) {
     const me = app.session.user;
     if (!me) return;
 
     existingChat
       .save({
-        users: { added: [Model.getIdentifier(me)] },            // 关键：{ type:'users', id:'...' }
-        relationships: { users: existingChat.users() || [] },   // 可选但更稳：与 EditModal 行为对齐
+        users: { added: [Model.getIdentifier(me)] },
+        relationships: { users: existingChat.users() || [] },
       })
       .then(() => {
         app.chat.addChat(existingChat);
@@ -83,7 +86,7 @@ export default class ChatCreateModal extends ChatModal {
     this.hide();
   }
 
-  // 新建：正确打包 save(...) 的数据（不再嵌套 attributes:{}）
+  // 新建：正确打包 save(...) 的数据（不再嵌套 attributes:{}；用 type 而非 isChannel）
   createNewChat(passedSelected) {
     const meId = String(app.session.user?.id?.() ?? '');
     const rawTitle = (this.getInput().title() || '').trim();
@@ -95,7 +98,7 @@ export default class ChatCreateModal extends ChatModal {
     // 过滤掉自己，仅保留对方（/对方们）的 User Model
     const selectedModels = selected.filter((u) => String(u?.id?.()) !== meId);
 
-    // —— 标题策略 ——
+    // —— 标题策略 —— 
     // 频道：必须有标题
     // 多人群聊：必须有标题
     // 一对一私聊：若未填标题，自动用对方用户名
@@ -120,17 +123,17 @@ export default class ChatCreateModal extends ChatModal {
       }
     }
 
-    // 直接传属性键（不要再包 attributes:{}）
+    // —— 与后端对齐：type = 0(私聊/群聊), 1(频道) ——
+    const type = this.isChannel ? 1 : 0;
+
     /** @type {any} */
-    const saveData = {
-      isChannel: !!this.isChannel,
-    };
+    const saveData = { type };              // 关键：不要发 isChannel
     if (title && title.length) saveData.title = title;
     if (rawIcon.length)        saveData.icon  = rawIcon;
     if (rawColor.length)       saveData.color = rawColor;
 
     // relationships：直接传 User Model 数组，Flarum 会自动序列化为 JSON:API
-    if (!saveData.isChannel && selectedModels.length) {
+    if (type === 0 && selectedModels.length) {
       saveData.relationships = {
         users: selectedModels,
       };
@@ -181,8 +184,9 @@ export default class ChatCreateModal extends ChatModal {
   }
 
   componentFormChat() {
+    const selectedLen = (this.getSelectedUsers() || []).length;  // ← 使用 getSelectedUsers()
     return [
-      this.usersSelected.length > 1
+      selectedLen > 1
         ? [
             this.componentFormInput({
               title: app.translator.trans('xelson-chat.forum.chat.list.add_modal.form.title.chat'),
