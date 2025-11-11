@@ -5,6 +5,7 @@
 // [CHANGED] 新增左右排布：给每条消息添加 mine/others 标记（自己在右，其他人在左）
 // [CHANGED] 标记位置在外层 .message-wrapper（与 ChatViewport.less 选择器对齐）
 // [KEEP] 其余保持你现有的 1.8 兼容改造（id 比较/空值守护/导入路径）
+// [FIX+] isVisible：使用“按 id 比较（字符串化）”，避免“同 id 不同实例”误判不可见
 
 import app from 'flarum/forum/app';
 import Component from 'flarum/common/Component';
@@ -328,13 +329,26 @@ export default class ChatMessage extends Component {
   }
 
   isVisible() {
-    if (this.model.chat() != app.chat.getCurrentChat()) return false;
+    const current = app.chat.getCurrentChat();
+    if (!current) return false;
+
+    // ★ 用“字符串化 id 比较”确保同 id 不同实例也能匹配
+    const curId = current.id?.();
+    const myChatId = this.model.chat?.()?.id?.();
+    if (String(curId ?? '') !== String(myChatId ?? '')) return false;
+
     if (this.model.isDeletedForever) return false;
 
-    const deletedBy = this.model.deleted_by();
+    const deletedBy = this.model.deleted_by?.();
     const meId = app.session.user?.id?.();
 
-    if (deletedBy && !(this.model.chat().role() || (deletedBy?.id?.() && String(deletedBy.id()) === String(meId)))) {
+    if (
+      deletedBy &&
+      !(
+        this.model.chat?.().role?.() ||
+        (deletedBy?.id?.() && String(deletedBy.id()) === String(meId))
+      )
+    ) {
       return false;
     }
     return true;
