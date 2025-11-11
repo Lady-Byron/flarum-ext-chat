@@ -94,13 +94,16 @@ export default class ViewportState {
   }
 
   getChatInput() {
-    const input = document.querySelector('.NeonChatFrame #chat-input');
-    if (!input) {
-      // eslint-disable-next-line no-console
+    const el =
+      document.querySelector('.NeonChatFrame #chat-input') ||
+      document.querySelector('.ChatViewport #chat-input') ||
+      document.getElementById('chat-input');
+    
+    if (!el) {
       console.warn('Chat input element not found');
       return null;
     }
-    return input;
+    return el;
   }
 
   messageSend() {
