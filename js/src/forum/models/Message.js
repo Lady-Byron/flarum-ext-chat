@@ -14,22 +14,8 @@ export default class Message extends Model {
     const id = (typeof this.id === 'function' ? this.id() : this.data?.id) || null;
     if (this.exists && id) return `/${type}/${id}`;
 
-    // 新建 -> /chatmessages/{chat_id}
-    const relChat = typeof this.chat === 'function' ? this.chat() : null;
-    const chatId =
-      (relChat && (typeof relChat.id === 'function' ? relChat.id() : relChat.data?.id)) ??
-      this.data?.attributes?.chat_id ??
-      this.data?.relationships?.chat?.data?.id ??
-      null;
-
-    if (!chatId) {
-      // 拿不到 chat_id：退回集合端点（便于排查；多数后端会 404）
-      // 注：降低到 debug，减少生产环境控制台噪音
-      console.debug('[xelson-chat] Missing chat_id when creating message; fallback POST /chatmessages (will likely 404).');
-      return `/${type}`;
-    }
-
-    return `/${type}/${chatId}`;
+    // 新建 -> /chatmessages  （后端从 data.attributes.chat_id 取 chat_id）
+    return `/${type}`;
   }
 }
 
