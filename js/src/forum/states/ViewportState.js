@@ -1,13 +1,8 @@
 // js/src/forum/states/ViewportState.js
-// 关掉“输入实时预览”：输入区仅维护文本；发送时创建一次性消息模型并提交。
-// - messageSend(): 不再走 writingPreview 分支；直接创建 chatmessages 记录、乐观插入并保存
-// - messageEdit(): 移除与预览相关的守护
-// - [FIX] 发送 405：创建模型时显式写入 chat_id，并保证 model.chat() 在 save 前可用（apiEndpoint 命中 POST /chatmessages/{chatId}）
-// - [FIX] this.model 未初始化：在 constructor 保存传入的 model，并在发送/重发时用当前会话兜底
-// - [FIX] 输入框清空：inputClear() 使用空串并同步清空本地草稿，直接写入 DOM value
-// 其余逻辑保持不变（草稿存取 / 粘底滚动由 ChatViewport 承担）
-
-// 不改后端：创建消息一律 POST /chatmessages，并在 data.attributes.chat_id 中传会话 ID。
+// 只保留与“发送/编辑/重发”有关的改动：
+// - 新建消息 => POST /chatmessages（集合端点），body.data.attributes 里必须有 chat_id
+// - 仍为 UI 提供 relationships.chat/user，兼容已有渲染
+// - 不额外触发单条 GET 拉取（避免触发 FetchMessageController）
 
 import app from 'flarum/forum/app';
 import Stream from 'flarum/common/utils/Stream';
@@ -41,6 +36,7 @@ export default class ViewportState {
 
   initChatStorage(model) {
     if (!model || !model.id) return;
+
     this.chatStorage.key = `neonchat.viewport${model.id()}`;
     try {
       const parsed = JSON.parse(localStorage.getItem(this.chatStorage.key));
@@ -57,6 +53,7 @@ export default class ViewportState {
 
   setChatStorageValue(key, value) {
     if (!this.chatStorage.key) return;
+
     try {
       const cached = JSON.parse(localStorage.getItem(this.chatStorage.key)) ?? {};
       cached[key] = value;
@@ -99,10 +96,9 @@ export default class ViewportState {
   messageSend() {
     const text = this.input.content();
     const trimmed = (text || '').trim();
-
     if (!trimmed || this.loadingSend) return;
 
-    // 编辑模式
+    // 编辑已存在消息
     if (this.messageEditing) {
       const model = this.messageEditing;
       if ((model.content || '').trim() !== (model.oldContent || '').trim()) {
@@ -114,32 +110,36 @@ export default class ViewportState {
       return;
     }
 
-    // 取当前会话
+    // 目标会话
     const chatModel = this.model || app.chat.getCurrentChat();
     if (!chatModel || !chatModel.id?.()) {
       console.warn('[neon-chat] No active chat model when sending message.');
       return;
     }
 
-    // 创建“乐观消息”并提交（创建：POST /chatmessages）
+    // 新建消息模型（集合端点 + attributes.chat_id）
     const model = app.store.createRecord('chatmessages');
     model.pushData({
       type: 'chatmessages',
-      attributes: { message: trimmed, created_at: new Date() },
+      attributes: {
+        message: trimmed,
+        created_at: new Date(),
+        // 关键：后端 PostMessageHandler 读取 attributes.chat_id
+        chat_id: chatModel.id?.(),
+      },
+      // 关系仍然提供给前端 UI 使用；不依赖后端读取
       relationships: {
         user: { data: Model.getIdentifier(app.session.user) },
         chat: { data: Model.getIdentifier(chatModel) },
       },
     });
 
-    // 老逻辑兼容：render 用
+    // 兼容旧逻辑
     model.content = trimmed;
-
-    // 临时 key（等待后端回写 id）
     model.tempKey = `tmp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
-    // 关键：后端从 body 取 chat_id
-    model.pushAttributes({ chat_id: chatModel.id?.() });
+    // 不再强制写入 pushAttributes(chat_id) 或改 endpoint；
+    // endpoint 由 Message.apiEndpoint() 决定 => /chatmessages
 
     app.chat.insertChatMessage(model); // 乐观回显
     this.messagePost(model);           // 异步保存
@@ -177,10 +177,14 @@ export default class ViewportState {
   }
 
   messageResend(model) {
-    // 兜底：离线消息重发时确保 chat_id 可用（创建端点依赖它）
+    // 重发时若需要，也把 chat_id 补到 attributes（集合端点仍可接受）
     const chatModel = this.model || app.chat.getCurrentChat();
     if (chatModel && !model.data?.attributes?.chat_id) {
-      model.pushAttributes({ chat_id: chatModel.id?.() });
+      model.pushData({
+        attributes: {
+          chat_id: chatModel.id?.(),
+        },
+      });
     }
     this.messagePost(model);
   }
@@ -188,6 +192,9 @@ export default class ViewportState {
   messagePost(model) {
     this.loadingSend = true;
     m.redraw();
+
+    // 这里沿用你现有的 app.chat.postChatMessage(model)
+    // 要点：不要在成功回调里再以 id 去 GET 单条
     return app.chat.postChatMessage(model).then(
       () => {
         this.loadingSend = false;
@@ -220,6 +227,7 @@ export default class ViewportState {
     if (!app.session.user) return;
 
     this.input.content((this.input.content() || '') + ` @${user.username()} `);
+
     const input = this.getChatInput();
     if (input) input.focus();
   }
