@@ -27,6 +27,16 @@ import Message from '../models/Message';
 import timedRedraw from '../utils/timedRedraw';
 import ChatPage from './ChatPage';
 
+// 放在文件开头 import 之后
+const isAdmin = () =>
+  !!(app.session?.user && (
+    // Flarum 1.8 前端 User 模型通常有 attribute('isAdmin')
+    app.session.user.attribute?.('isAdmin') ??
+    // 兜底：直接看原始 attributes
+    app.session.user.data?.attributes?.isAdmin
+  ));
+
+
 export default class ChatViewport extends Component {
   oninit(vnode) {
     super.oninit(vnode);
@@ -56,6 +66,17 @@ export default class ChatViewport extends Component {
 
   loadChat() {
     if (!this.state) return;
+
+    // 未加入（有 removed_at）时，不发起拉取；管理员可越权旁观
+    if (this.model?.removed_at?.() && !isAdmin()) {
+      const cid = String(this.model.id?.() ?? '');
+      // 清掉该会话已缓存的消息，避免“退出后还能看到历史”
+      app.chat.chatmessages = app.chat.chatmessages.filter(
+        (m) => String(m.chat()?.id?.() ?? '') !== cid
+      );
+      m.redraw();
+      return;
+    }
 
     const oldScroll = Number(this.state.scroll.oldScroll || 0);
     this.reloadMessages();
