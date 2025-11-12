@@ -5,7 +5,7 @@
 // [FIX] Loader 读取 this.state.loading（原误读 this.state.scroll.loading）
 // [CHANGED] getChatWrapper(): 优先返回当前实例的 this.wrapperEl，避免全局选择器误配
 // [FIX] 将所有使用 el.offsetHeight / wrapper.offsetHeight 的位置统一改为 clientHeight，
-//      以兼容 document.documentElement 作为滚动容器的场景（移动端 ChatPage）
+//       以兼容 document.documentElement 作为滚动容器的场景（移动端 ChatPage）
 // [FIX] wrapperOnBeforeUpdate(): 使用 this.state.scroll.autoScroll（原误用 this.state.autoScroll）
 // [FIX] 小坑 A：checkUnreaded() 查询消息节点限定在当前视口作用域（this.element）
 // [FIX] 小坑 B：scrollToAnchor() 用矩形差计算相对位移，兼容 documentElement/.wrapper
@@ -18,6 +18,8 @@
 import app from 'flarum/forum/app';
 import Component from 'flarum/common/Component';
 import LoadingIndicator from 'flarum/common/components/LoadingIndicator';
+// +++ 新增 Import +++
+import Button from 'flarum/common/components/Button';
 
 import ChatInput from './ChatInput';
 import ChatMessage from './ChatMessage';
@@ -32,6 +34,9 @@ export default class ChatViewport extends Component {
     super.oninit(vnode);
     this.model = this.attrs.chatModel;
     if (this.model) this.state = app.chat.getViewportState(this.model);
+
+    // +++ 新增：用于 "加入" 按钮的 loading 状态 +++
+    this.loadingJoin = false;
   }
 
   oncreate(vnode) {
@@ -57,6 +62,17 @@ export default class ChatViewport extends Component {
   loadChat() {
     if (!this.state) return;
 
+    // +++ 新增：权限检查 +++
+    // 如果用户不能访问内容
+    // (canAccessContent 内部已包含管理员检查)
+    // 就不要加载消息。
+    if (this.model && !this.model.canAccessContent()) {
+      // 标记为已加载，防止后续触发
+      // this.state.messagesFetched = true; 
+      return;
+    }
+    // +++ 检查结束 +++
+
     const oldScroll = Number(this.state.scroll.oldScroll || 0);
     this.reloadMessages();
     m.redraw();
@@ -78,42 +94,101 @@ export default class ChatViewport extends Component {
 
   view() {
     if (this.model) {
-      // [FIX] children 显式组装为数组（loader + 消息），确保同层级 keyed children 一致
-      const children = [
-        this.componentLoader(this.state?.loading),
-        ...this.componentsChatMessages(this.model),
-      ];
+      
+      // +++ 新增：核心权限 UI 切换 +++
+      if (this.model.canAccessContent()) {
+        // --- 场景1：有权访问 (旧逻辑) ---
+        // (管理员或活跃成员)
+        // [FIX] children 显式组装为数组（loader + 消息），确保同层级 keyed children 一致
+        const children = [
+          this.componentLoader(this.state?.loading),
+          ...this.componentsChatMessages(this.model),
+        ];
 
-      return (
-        <div className="ChatViewport">
-          <div
-            className="wrapper"
-            oncreate={this.wrapperOnCreate.bind(this)}
-            onbeforeupdate={this.wrapperOnBeforeUpdate.bind(this)}
-            onupdate={this.wrapperOnUpdate.bind(this)}
-            onremove={this.wrapperOnRemove.bind(this)}
-          >
-            {children}
+        return (
+          <div className="ChatViewport">
+            <div
+              className="wrapper"
+              oncreate={this.wrapperOnCreate.bind(this)}
+              onbeforeupdate={this.wrapperOnBeforeUpdate.bind(this)}
+              onupdate={this.wrapperOnUpdate.bind(this)}
+              onremove={this.wrapperOnRemove.bind(this)}
+            >
+              {children}
+            </div>
+            <ChatInput
+              state={this.state}
+              model={this.model}
+              oninput={() => {
+                if (this.nearBottom() && !this.state.messageEditing) {
+                  this.scrollToBottom();
+                }
+              }}
+            />
+            {this.isFastScrollAvailable() ? this.componentScroller() : null}
           </div>
-          <ChatInput
-            state={this.state}
-            model={this.model}
-            oninput={() => {
-              if (this.nearBottom() && !this.state.messageEditing) {
-                this.scrollToBottom();
-              }
-            }}
-          />
-          {this.isFastScrollAvailable() ? this.componentScroller() : null}
-        </div>
-      );
+        );
+      } else {
+        // --- 场景2：无权访问 (新逻辑) ---
+        // (非成员)
+        return (
+          <div className="ChatViewport ChatViewport--blocked">
+            {this.model.canJoin() ? (
+              // 2a: 可以加入 (公共频道 / 已退出的私聊)
+              <div className="ChatViewport-join">
+                <p>{app.translator.trans('xelson-chat.forum.chat.viewport.must_join_description', { title: this.model.title() })}</p>
+                <Button
+                  className="Button Button--primary"
+                  icon="fas fa-plus"
+                  loading={this.loadingJoin}
+                  onclick={this.joinChat.bind(this)}
+                >
+                  {app.translator.trans('xelson-chat.forum.chat.viewport.join_button')}
+                </Button>
+              </div>
+            ) : (
+              // 2b: 无法加入 (无权的私聊)
+              <div className="ChatViewport-join">
+                <p>{app.translator.trans('xelson-chat.forum.chat.viewport.no_permission_description')}</p>
+              </div>
+            )}
+          </div>
+        );
+      }
+      // +++ 权限检查结束 +++
     }
 
+    // --- 场景3：未选择聊天 (旧逻辑) ---
     return (
       <div className="ChatViewport">
         <ChatWelcome />
       </div>
     );
+  }
+
+  // +++ 新增：加入聊天的方法 +++
+  joinChat() {
+    if (this.loadingJoin) return;
+    this.loadingJoin = true;
+
+    // 我们需要一个在 ChatState.js 上的 'apiJoinChat' 帮助
+    // (我们将在下一批次中添加它)
+    app.chat.apiJoinChat(this.model)
+      .then(() => {
+        // 成功加入后，模型的状态会通过 pusher 更新
+        // 此时 isMember() / canAccessContent() 会变为 true，
+        // Mithril 会自动重绘，显示场景1 (聊天内容)
+        this.loadingJoin = false;
+        this.loadChat(); // 重新加载消息
+        m.redraw();
+      })
+      .catch((e) => {
+        this.loadingJoin = false;
+        m.redraw();
+        // (处理错误, e.g., 弹窗)
+        console.error('[neon-chat] Join chat failed:', e);
+        app.alerts.show({ type: 'error' }, e?.response?.errors?.[0]?.detail || app.translator.trans('core.lib.error.generic_with_reason_text'));
+      });
   }
 
   // [FIX] 临时 key：优先使用真实 id()；若尚未分配 id（乐观消息），使用 tempKey；仍无则退回 map index
@@ -222,7 +297,7 @@ export default class ChatViewport extends Component {
 
   wrapperOnCreate(vnode) {
     super.oncreate(vnode);
-    this.wrapperEl = vnode.dom;            // [CHANGED]
+    this.wrapperEl = vnode.dom;        // [CHANGED]
     this.wrapperOnUpdate(vnode);
 
     const target = app.current.matches?.(ChatPage) ? window : this.wrapperEl;
@@ -291,7 +366,7 @@ export default class ChatViewport extends Component {
 
   wrapperOnScroll(e) {
     const el = app.current.matches?.(ChatPage) ? document.documentElement : e.currentTarget;
-    const state = this.state;                         // [HARDEN] 捕获当次回调所用 state
+    const state = this.state;                      // [HARDEN] 捕获当次回调所用 state
     if (!el || !state) return;
 
     state.scroll.oldScroll = el.scrollHeight - el.clientHeight - el.scrollTop; // [FIX] clientHeight
@@ -431,29 +506,33 @@ export default class ChatViewport extends Component {
   }
 
   reloadMessages() {
-    if (!this.state.messagesFetched) {
-      let query;
-      if (this.model.unreaded()) {
-        query = this.model.readed_at()?.toISOString() ?? new Date(0).toISOString();
-        this.state.scroll.autoScroll = false;
-      }
+    // [FIX] 确保 state 存在
+    if (!this.state || this.state.messagesFetched) return;
 
-      app.chat.apiFetchChatMessages(this.model, query).then(() => {
-        if (this.model.unreaded()) {
-          // [CHANGED] 用 id 比较
-          const anchor = app.chat.getChatMessages(
-            (mdl) =>
-              String(mdl.chat()?.id?.() ?? '') === String(this.model?.id?.() ?? '') &&
-              mdl.created_at() > this.model.readed_at()
-          )[0];
-          this.scrollToAnchor(anchor);
-        } else this.state.scroll.autoScroll = true;
-
-        m.redraw();
-      });
-
-      this.state.messagesFetched = true;
+    let query;
+    if (this.model.unreaded()) {
+      query = this.model.readed_at()?.toISOString() ?? new Date(0).toISOString();
+      this.state.scroll.autoScroll = false;
     }
+
+    app.chat.apiFetchChatMessages(this.model, query).then(() => {
+      // [FIX] 确保 state 仍然存在
+      if (!this.state) return;
+
+      if (this.model.unreaded()) {
+        // [CHANGED] 用 id 比较
+        const anchor = app.chat.getChatMessages(
+          (mdl) =>
+            String(mdl.chat()?.id?.() ?? '') === String(this.model?.id?.() ?? '') &&
+            mdl.created_at() > this.model.readed_at()
+        )[0];
+        this.scrollToAnchor(anchor);
+      } else this.state.scroll.autoScroll = true;
+
+      m.redraw();
+    });
+
+    this.state.messagesFetched = true;
   }
 
   nearBottom() {
