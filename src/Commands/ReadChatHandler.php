@@ -11,6 +11,7 @@ namespace Xelson\Chat\Commands;
 use Carbon\Carbon;
 use Illuminate\Contracts\Bus\Dispatcher as BusDispatcher;
 use Xelson\Chat\ChatRepository;
+use Flarum\User\Exception\PermissionDeniedException;
 
 class ReadChatHandler
 {
@@ -38,9 +39,12 @@ class ReadChatHandler
 
         $chat = $this->chats->findOrFail($chat_id, $actor);
 
-        $chatUser = $chat->getChatUser($actor);
+        // +++ 新增：核心“读”权限检查 +++
+        if (!$chat->canAccessContent($actor)) {
+            throw new PermissionDeniedException();
+        }
 
-        $actor->assertPermission($chatUser);
+        $chatUser = $chat->getChatUser($actor);
 
         $time = new Carbon($readed_at);
         if ($chatUser->removed_at && $time > $chatUser->removed_at) $time = $chatUser->removed_at;
