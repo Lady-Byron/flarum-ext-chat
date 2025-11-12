@@ -6,6 +6,7 @@ use Illuminate\Contracts\Events\Dispatcher;
 use Xelson\Chat\ChatRepository;
 use Xelson\Chat\Event\Message\Deleting;
 use Xelson\Chat\MessageRepository;
+use Flarum\User\Exception\PermissionDeniedException;
 
 class DeleteMessageHandler
 {
@@ -35,6 +36,13 @@ class DeleteMessageHandler
         $actor->assertPermission(!$message->type);
 
         $chat     = $this->chats->findOrFail($message->chat_id, $actor);
+
+        // +++ 新增：核心“删除”权限检查 +++
+        if (!$chat->canAccessContent($actor)) {
+            throw new PermissionDeniedException();
+        }
+        // +++ 检查结束 +++
+        
         $chatUser = $chat->getChatUser($actor);
 
         // 仅参与者且具备相应角色才能删除
