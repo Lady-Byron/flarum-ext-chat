@@ -26,6 +26,68 @@ Object.assign(Chat.prototype, {
   joined_at: Model.attribute('joined_at', Model.transformDate),
   removed_by: Model.attribute('removed_by'),
 
+  // -------------------------------------------------------------------
+  // +++ 新增：权限辅助函数 +++
+  // -------------------------------------------------------------------
+
+  /**
+   * 是否为管理员
+   * @private
+   */
+  _isAdmin() {
+    return app.session.user && app.session.user.isAdmin();
+  },
+
+  /**
+   * 是否为公共频道
+   * @returns {boolean}
+   */
+  isPublic() {
+    return this.type() === 1;
+  },
+
+  /**
+   * 是否为当前会话的 *活跃* 成员 (或管理员)
+   * (这是 ChatUserSerializer 注入的 *当前用户* 的 pivot 状态)
+   * @returns {boolean}
+   */
+  isMember() {
+    // 管理员始终被视为成员
+    if (this._isAdmin()) return true;
+
+    // 必须有 joined_at 且 *没有* removed_at
+    // (注意：这里的 joined_at, removed_at 是从 ChatUserSerializer 序列化来的
+    // 它们代表 *当前 actor* 在这个会话中的 pivot 状态)
+    return this.joined_at() && !this.removed_at();
+  },
+
+  /**
+   * 是否 *可以* 访问内容（读/写）
+   * @returns {boolean}
+   */
+  canAccessContent() {
+    // 根据我们的需求，公共频道也必须加入才能访问，因此 isMember() 是唯一标准
+    return this.isMember();
+  },
+
+  /**
+   * 是否 *可以* 加入 (或 重新加入)
+   * @returns {boolean}
+   */
+  canJoin() {
+    // 已经是成员，不能加入
+    if (this.isMember()) return false; 
+    
+    // 1. 如果是公共频道，总可以加入
+    // 2. 如果是私聊/群聊，只有在 (removed_at 存在) = "曾经是成员" 的情况下，才允许重新加入
+    //    (注意：'removed_at' 是您自己的 pivot 状态)
+    return this.isPublic() || this.removed_at();
+  },
+
+  // -------------------------------------------------------------------
+  // --- 保持不变的计算属性 ---
+  // -------------------------------------------------------------------
+
   // [CHANGED] 以 users/type 作为依赖，可靠触发
   pm_user: computed('users', 'type', function () {
     return this.getPMUser();
@@ -77,4 +139,3 @@ Object.assign(Chat.prototype, {
     return r * 0.299 + g * 0.587 + b * 0.114 > 186 ? darkColor : lightColor;
   },
 });
-
