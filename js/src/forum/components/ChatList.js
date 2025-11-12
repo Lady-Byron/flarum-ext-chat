@@ -1,12 +1,18 @@
 // js/src/forum/components/ChatList.js
 // [CHANGED] 为外层 <div> 添加 key，避免 DOM 复用导致预览项错位
 // [CHANGED] 统一 1.8 导入路径；保留你原有逻辑（受控输入/移动端判定/开关列表）
+//
+// [!!! 关键修复 2025/11/12 !!!]
+// 移除了 'Button' 和 'ButtonGroup' 的 imports，这两个导入在 ChatList 中导致了
+// "selector must be a string or a component" 和 "reading 'onbeforeupdate'" 的级联错误。
+//
+// `componentFilters()` 已被重构，使用与 ChatCreateModal 相同的
+// 'div.ChatType' 和 'div.Tab' 样式，不再依赖外部组件。
 
 import app from 'flarum/forum/app';
 import Component from 'flarum/common/Component';
-// +++ 新增 Imports +++
-import Button from 'flarum/common/components/Button';
-import ButtonGroup from 'flarum/common/components/ButtonGroup';
+// --- (已删除 'Button' 和 'ButtonGroup' imports) ---
+import classList from 'flarum/common/utils/classList'; // +++ 新增 Import
 
 import ChatCreateModal from './ChatCreateModal';
 import ChatPreview from './ChatPreview';
@@ -59,7 +65,7 @@ export default class ChatList extends Component {
           )}
         </div>
 
-        {/* +++ 新增：过滤 UI +++ */}
+        {/* +++ 过滤器 UI (已重构) +++ */}
         {this.componentFilters()}
 
         <div className="list">
@@ -72,63 +78,64 @@ export default class ChatList extends Component {
     );
   }
 
-  // +++ 新增：过滤器组件 +++
+  // +++ 重构：过滤器组件 (不使用 Button/ButtonGroup) +++
   componentFilters() {
-    // 这依赖于我们在 ChatState 中即将添加的 Stream
+    // 这依赖于我们在 ChatState 中添加的 Stream
     if (!app.chat || typeof app.chat.filterMode !== 'function') return null;
 
     const currentFilter = app.chat.filterMode();
 
     return (
       <div className="ChatList-filters">
-        <ButtonGroup className="ChatList-filterButtons">
-          <Button
-            icon="fas fa-comments"
-            className={currentFilter === 'ALL' ? 'active' : ''}
+        {/* 使用 ChatCreateModal 中的 .ChatType 样式 */}
+        <div className="ChatType">
+          <div
+            className={classList({ 'Tab Tab--left': true, 'Tab--active': currentFilter === 'ALL' })}
             onclick={() => app.chat.filterMode('ALL')}
+            title={app.translator.trans('xelson-chat.forum.chat.list.filters.all')}
           >
-            {app.translator.trans('xelson-chat.forum.chat.list.filters.all')}
-          </Button>
-          <Button
-            icon="fas fa-user"
-            className={currentFilter === 'PM' ? 'active' : ''}
+             <i className="fas fa-comments" />
+          </div>
+          <div
+            className={classList({ Tab: true, 'Tab--active': currentFilter === 'PM' })}
             onclick={() => app.chat.filterMode('PM')}
+            title={app.translator.trans('xelson-chat.forum.chat.list.filters.pm')}
           >
-            {app.translator.trans('xelson-chat.forum.chat.list.filters.pm')}
-          </Button>
-          <Button
-            icon="fas fa-users"
-            className={currentFilter === 'GROUP' ? 'active' : ''}
+             <i className="fas fa-user" />
+          </div>
+          <div
+            className={classList({ Tab: true, 'Tab--active': currentFilter === 'GROUP' })}
             onclick={() => app.chat.filterMode('GROUP')}
+            title={app.translator.trans('xelson-chat.forum.chat.list.filters.group')}
           >
-            {app.translator.trans('xelson-chat.forum.chat.list.filters.group')}
-          </Button>
-          <Button
-            icon="fas fa-hashtag"
-            className={currentFilter === 'PUBLIC' ? 'active' : ''}
+             <i className="fas fa-users" />
+          </div>
+          <div
+            className={classList({ 'Tab Tab--right': true, 'Tab--active': currentFilter === 'PUBLIC' })}
             onclick={() => app.chat.filterMode('PUBLIC')}
+            title={app.translator.trans('xelson-chat.forum.chat.list.filters.public')}
           >
-            {app.translator.trans('xelson-chat.forum.chat.list.filters.public')}
-          </Button>
-        </ButtonGroup>
+             <i className="fas fa-hashtag" />
+          </div>
+        </div>
 
         {/* 管理员视图开关 */}
         {app.session.user && app.session.user.isAdmin() ? (
-          <Button
-            className={'Button ChatList-adminView ' + (app.chat.adminView() ? 'active' : '')}
-            icon={app.chat.adminView() ? 'fas fa-eye' : 'fas fa-eye-slash'}
+          <div
+            className={'ChatList-adminView ' + (app.chat.adminView() ? 'active' : '')}
             onclick={() => app.chat.adminView(!app.chat.adminView())}
+            title={app.translator.trans('xelson-chat.forum.chat.list.filters.admin_view')}
           >
-            {app.translator.trans('xelson-chat.forum.chat.list.filters.admin_view')}
-          </Button>
+             <i className={app.chat.adminView() ? 'fas fa-eye' : 'fas fa-eye-slash'} />
+          </div>
         ) : null}
       </div>
     );
   }
 
-  // +++ 重构：核心过滤逻辑 +++
+  // +++ 重构：核心过滤逻辑 (保持不变) +++
   content() {
-    // 这依赖于我们在 ChatState 中即将添加的 Stream
+    // 这依赖于我们在 ChatState 中添加的 Stream
     if (!app.chat || typeof app.chat.filterMode !== 'function') {
         return app.chat.getChatsSortedByLastUpdate().map((model) => (
             <div key={model.id()} onclick={this.onChatPreviewClicked.bind(this, model)}>
