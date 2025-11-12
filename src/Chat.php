@@ -27,8 +27,7 @@ class Chat extends AbstractModel
      * @param int    	$type
      * @param int       $creator_id
 	 * @param Carbon    $created_at
-     * 
-     */
+     * */
     public static function build($title, $color, $icon, $type, $creator_id = null, $created_at = null)
     {
         $chat = new static;
@@ -66,6 +65,56 @@ class Chat extends AbstractModel
         }
         return $chatUser;
     }
+
+    // -------------------------------------------------------------------
+    // +++ 新增方法 +++
+    // -------------------------------------------------------------------
+
+    /**
+     * Get the pivot record for a specific user (non-mutating).
+     * 这是一个安全的查询，它不会像 getChatUser() 那样自动创建成员资格。
+     *
+     * @param User $actor
+     * @return ChatUser|null
+     */
+    public function getMembership(User $actor)
+    {
+        // 游客或未登录用户
+        if ($actor->isGuest()) {
+            return null;
+        }
+
+        return ChatUser::where('chat_id', $this->id)
+                       ->where('user_id', $actor->id)
+                       ->first();
+    }
+
+    /**
+     * Check if the user can read/write content in this chat.
+     * (Admin, or an active member).
+     *
+     * @param User $actor
+     * @return bool
+     */
+    public function canAccessContent(User $actor): bool
+    {
+        // 1. Admin Bypass
+        // 管理员可以无条件访问
+        if ($actor->isAdmin()) {
+            return true;
+        }
+
+        // 2. Get membership (safely)
+        $membership = $this->getMembership($actor);
+
+        // 3. Must have a membership record and must not have 'removed_at' set
+        // 必须有成员记录，且 'removed_at' 必须为 null
+        return $membership && is_null($membership->removed_at);
+    }
+
+    // -------------------------------------------------------------------
+    // --- 保持不变的方法 ---
+    // -------------------------------------------------------------------
 
     /**
      * @return \Illuminate\Database\Eloquent\Relations\BelongsTo
