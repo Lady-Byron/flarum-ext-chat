@@ -15,6 +15,7 @@ use Xelson\Chat\MessageValidator;
 use Illuminate\Contracts\Events\Dispatcher;
 use Illuminate\Support\Arr;
 use Xelson\Chat\Event\Message\Saved;
+use Flarum\User\Exception\PermissionDeniedException;
 
 class EditMessageHandler
 {
@@ -72,6 +73,14 @@ class EditMessageHandler
         );
 
         $chat = $this->chats->findOrFail($message->chat_id, $actor);
+
+        // +++ 新增：核心“编辑”权限检查 +++
+        // 必须是活跃成员才能编辑消息
+        if (!$chat->canAccessContent($actor)) {
+            throw new PermissionDeniedException();
+        }
+        // +++ 检查结束 +++
+        
         $chatUser = $chat->getChatUser($actor);
 
         if (isset($actions['msg'])) {
