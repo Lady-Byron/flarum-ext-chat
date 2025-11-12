@@ -53,6 +53,13 @@ class MessageRepository
      */
     public function queryVisible(Chat $chat, User $actor)
     {
+        // +++ 新增：核心“读”权限检查 +++
+        if (!$chat->canAccessContent($actor)) {
+            // 如果用户无权访问（非成员或已退出），返回一个永远为空的查询
+            return $this->query()->whereRaw('1=0');
+        }
+        // +++ 检查结束 +++
+        
         $settings = resolve(SettingsRepositoryInterface::class);
 
         $query = $this->query();
