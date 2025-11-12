@@ -41,6 +41,10 @@ export default class ChatState {
 
     this.q = Stream('');
 
+    // +++ 新增：UI 过滤器状态 +++
+    this.filterMode = Stream('ALL'); // 'ALL', 'PM', 'GROUP', 'PUBLIC'
+    this.adminView = Stream(false); // 仅管理员可见
+
     /** @type {import('../models/Chat').default[]} */
     this.chats = [];
     /** @type {import('../models/Message').default[]} */
@@ -268,8 +272,20 @@ export default class ChatState {
    *  会话集合/排序/检索
    * -------------------------------- */
   getChats() {
-    const needle = (this.q() || '').toLowerCase();
-    return this.chats.filter((chat) => (needle && chat.matches(needle)) || (!needle && !chat.removed_at?.()));
+    // ！！！ 关键修改 ！！！
+    // 搜索 (this.q) 和可见性 (isMember/isPublic) 过滤
+    // 已经全部移交(move)到 `ChatList.js` (批次三) 的 `content()` 方法中。
+    //
+    // `getChats()` 和 `getChatsSortedByLastUpdate()` 现在
+    // 必须返回从后端获取的“全量宽容列表”，
+    // 以便 ChatList.js 可以对其执行“搜索复归”和“UI过滤”。
+
+    // 旧逻辑: (旧逻辑同时处理搜索和过滤，已废弃)
+    // const needle = (this.q() || '').toLowerCase();
+    // return this.chats.filter((chat) => (needle && chat.matches(needle)) || (!needle && !chat.removed_at?.()));
+    
+    // 新逻辑：
+    return this.chats;
   }
 
   getChatsSortedByLastUpdate() {
@@ -764,6 +780,21 @@ export default class ChatState {
         viewport.loadingQueries[key] = false;
         m.redraw();
       });
+  }
+
+  // +++ 新增：加入聊天 (供 ChatViewport 调用) +++
+  apiJoinChat(chatModel) {
+    const me = app.session.user;
+    if (!me || !chatModel) return Promise.reject();
+
+    // 模仿 ChatEditModal/ChatCreateModal 的"加入"和"复归"逻辑
+    // 这会发送一个 PATCH 到 EditChatHandler，
+    // 后端的 'isTryingToJoin' 逻辑 (批次二) 会捕获它。
+    return chatModel.save({
+        users: { added: [Model.getIdentifier(me)] },
+        // 附带 relationships.users 更稳健，与 ChatEditModal 行为对齐
+        relationships: { users: chatModel.users() || [] }
+    });
   }
 
   /* --------------------------------
