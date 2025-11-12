@@ -33,6 +33,11 @@ class ChatRepository
     {
         $query = $this->query();
 
+        // +++ 新增：管理员绕过所有规则 +++
+        if ($actor->isAdmin()) {
+            return $query;
+        }
+
         $query->where(function (Builder $q) use ($actor) {
             // ORIGINAL ISSUE:
             //   旧代码使用 ->get()->toArray() 传给 whereIn('id', ...)，得到的是二维数组
