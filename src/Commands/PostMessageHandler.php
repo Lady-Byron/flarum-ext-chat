@@ -14,6 +14,7 @@ use Xelson\Chat\ChatRepository;
 use Xelson\Chat\Event\Message\Saved;
 use Xelson\Chat\Message;
 use Xelson\Chat\MessageValidator;
+use Flarum\User\Exception\PermissionDeniedException;
 
 class PostMessageHandler
 {
@@ -56,9 +57,11 @@ class PostMessageHandler
 
         $actor->assertCan('xelson-chat.permissions.chat');
 
-        $chatUser = $chat->getChatUser($actor);
-
-        $actor->assertPermission($chatUser && !$chatUser->removed_at);
+        // +++ 新增：核心“写”权限检查 +++
+        // 必须在 getChatUser() 之前调用，防止自动加入
+        if (!$chat->canAccessContent($actor)) {
+            throw new PermissionDeniedException();
+        }
 
         $message = Message::build(
             $content,
