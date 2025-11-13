@@ -5,9 +5,11 @@
 //      只切换“最近的 .Dropdown”，并关闭同一 Modal 里的其它已打开下拉；
 //   2) 在 Dropdown 根上阻止冒泡，避免外层误触发。
 // - 其它你已有的 1.8 兼容与空值守护保持不变。
-// - [NEW] 加入/退出：不再依赖 oninit 计算的 this.isLocalLeaved（可能过期），
-//        改为运行时基于 this.model.canAccessContent()/this.model.canJoin() 判定；
-//        强制使用 PATCH + JSON:API payload，并在成功后 pushPayload 同步本地 store。
+// - [关键修复] 管理员有 canAccessContent() 绕行 → 不能用它判定“是否已加入”。
+//   现在按钮与行为**只以 `model.isMember()` / `model.canJoin()` 为准**：
+//   - isMember() = true  → 显示【退出聊天】，发送 removed 自己；
+//   - canJoin() = true   → 显示【加入聊天】，发送 added 自己；
+//   - 两者皆否（例如管理员查看别人的私聊）→ 不显示加入/退出按钮，避免 400。
 
 import app from 'flarum/forum/app';
 import Button from 'flarum/common/components/Button';
@@ -42,14 +44,15 @@ export default class ChatEditModal extends ChatModal {
     this.setSelectedUsers((this.model.users() || []).filter(alive));
     this.edited = {};
 
-    // 我是否已加入：pivot 存在 且 未 removed（仅初始化时的提示；后续逻辑不再依赖此变量）
+    // 旧逻辑：是否已加入（根据 pivot）
+    // ⚠️ 注意：后续 UI 与行为请使用 this.model.isMember()/canJoin()，不要依赖此变量判定
     const me = app.session.user;
     const mePivot = me && me.chat_pivot ? me.chat_pivot(chatId) : null;
     this.isLocalLeaved = !(mePivot && !mePivot.removed_at?.());
 
     this.isLocalModerator = this.isModer(me);
 
-    // (锁) 防止加入/退出重复点击
+    // 防重复提交锁
     this.loading = false;
   }
 
@@ -334,18 +337,23 @@ export default class ChatEditModal extends ChatModal {
       );
     }
 
-    // ✅ 文案依据“实时状态”：this.model.canAccessContent() 为 true -> 显示“退出”；否则“加入”
-    buttons.push(
-      <Button
-        className="Button Button--primary Button--block ButtonLeave"
-        onclick={this.onleave.bind(this)}
-        loading={this.loading}
-      >
-        {app.translator.trans(
-          `xelson-chat.forum.chat.edit_modal.form.${this.model.canAccessContent() ? 'leave' : 'return'}`
-        )}
-      </Button>
-    );
+    // ✅ [关键修复] 文案与出现条件只看 isMember()/canJoin()，不再依赖 canAccessContent()
+    const isMember = this.model.isMember();
+    const canJoin  = this.model.canJoin();
+
+    if (isMember || canJoin) {
+      buttons.push(
+        <Button
+          className="Button Button--primary Button--block ButtonLeave"
+          onclick={this.onleave.bind(this)}
+        >
+          {app.translator.trans(
+            `xelson-chat.forum.chat.edit_modal.form.${isMember ? 'leave' : 'return'}`
+          )}
+        </Button>
+      );
+    }
+    // 若两者皆否（例如管理员非成员查看别人的私聊）：不显示加入/退出按钮
 
     if (!app.chat.isChatPM(this.model) && app.chat.getPermissions().create.channel) {
       buttons.push(this.componentDeleteChat());
@@ -364,103 +372,91 @@ export default class ChatEditModal extends ChatModal {
     if (this.loading) return;
     this.loading = true;
 
-    // ❗️不要再用 this.isLocalLeaved（可能是旧值、与后端不同步）
-    const isMember = this.model.canAccessContent(); // 已加入？
-    const canJoin  = this.model.canJoin();          // 可以加入？
+    // ✅ 决策依据：只看 isMember()/canJoin()，避免管理员 canAccessContent() 误判
+    const isMember = this.model.isMember();
+    const canJoin  = this.model.canJoin();
 
-    // --- 场景 1：已加入 -> 退出 ---
+    let payload;
+
     if (isMember) {
-      // 1) 构建 'attributes'
+      // --- 场景 1：已加入 -> 退出 ---
+      // 1. 构建 'attributes'
       const attributes = {
         users: {
-          removed: [{ type: 'users', id: me.id() }]
-        }
+          removed: [{ type: 'users', id: me.id() }],
+        },
       };
 
-      // 2) 构建 'relationships'：把自己从“当前选中成员列表”里移除
+      // 2. 构建 'relationships'
       const relationships = {
         users: {
           data: (this.getSelectedUsers() || [])
-            .filter(u => u && u.id() !== me.id())
-            .map(Model.getIdentifier)
-        }
+            .filter((u) => u && u.id() !== me.id()) // 确保把自己从关系中移除
+            .map(Model.getIdentifier),
+        },
       };
 
-      app.request({
-        method: 'PATCH', // 强制 PATCH
+      payload = { attributes, relationships };
+    } else if (canJoin) {
+      // --- 场景 2：未加入 -> 加入 ---
+      // 1. 构建 'attributes'
+      const attributes = {
+        users: {
+          added: [{ type: 'users', id: me.id() }],
+        },
+      };
+
+      // 2. 构建 'relationships'（确保把自己加入到关系中）
+      const currentUsers = (this.getSelectedUsers() || []).slice();
+      if (!currentUsers.some((u) => u && u.id() === me.id())) {
+        currentUsers.push(me);
+      }
+      const relationships = {
+        users: {
+          data: currentUsers.map(Model.getIdentifier),
+        },
+      };
+
+      payload = { attributes, relationships };
+    } else {
+      // --- 场景 3：既不是成员，也不可自助加入（例如管理员非成员查看别人的私聊）---
+      this.loading = false;
+      return;
+    }
+
+    // 3. 强制发送 PATCH 请求
+    app
+      .request({
+        method: 'PATCH',
         url: `${app.forum.attribute('apiUrl')}/chats/${this.model.id()}`,
         body: {
           data: {
             type: 'chats',
             id: this.model.id(),
-            attributes,
-            relationships
-          }
-        }
+            attributes: payload.attributes,
+            relationships: payload.relationships,
+          },
+        },
       })
-      .then(payload => { if (payload) app.store.pushPayload(payload); }) // 同步 store（pivot/relationships）
-      .then(() => { m.redraw(); this.hide(); })
+      .then((responsePayload) => {
+        // [!!! 关键修复 !!!]
+        // 强制 Flarum store 吸收响应，
+        // 这将更新 app.session.user 上的 chat_pivot 数据，确保 UI 立即同步
+        if (responsePayload) app.store.pushPayload(responsePayload);
+        m.redraw();
+        this.hide();
+      })
       .catch((e) => {
-        // 显示后端 403/500
         app.alerts.show(
           { type: 'error' },
-          e?.response?.errors?.[0]?.detail || app.translator.trans('core.lib.error.generic_with_reason_text')
+          e?.response?.errors?.[0]?.detail ||
+            app.translator.trans('core.lib.error.generic_with_reason_text')
         );
-        throw e; // 便于控制台查看
+        throw e; // 重新抛出 403/500 错误，以便 Flarum 显示
       })
-      .finally(() => { this.loading = false; });
-
-      return;
-    }
-
-    // --- 场景 2：未加入 -> 加入 ---
-    if (!canJoin) {
-      // 被踢/私聊不允许自助加入，直接提示
-      this.loading = false;
-      app.alerts.show(
-        { type: 'error' },
-        app.translator.trans('xelson-chat.forum.chat.viewport.no_permission_description')
-      );
-      return;
-    }
-
-    // 1) 构建 'attributes'
-    const attributes = {
-      users: {
-        added: [{ type: 'users', id: me.id() }]
-      }
-    };
-
-    // 2) 构建 'relationships'：确保把自己加入到本地列表
-    const currentUsers = (this.getSelectedUsers() || []).slice();
-    if (!currentUsers.some(u => u && u.id() === me.id())) currentUsers.push(me);
-
-    const relationships = {
-      users: { data: currentUsers.map(Model.getIdentifier) }
-    };
-
-    app.request({
-      method: 'PATCH', // 强制 PATCH
-      url: `${app.forum.attribute('apiUrl')}/chats/${this.model.id()}`,
-      body: {
-        data: {
-          type: 'chats',
-          id: this.model.id(),
-          attributes,
-          relationships
-        }
-      }
-    })
-    .then(payload => { if (payload) app.store.pushPayload(payload); }) // 同步 store（pivot/relationships）
-    .then(() => { m.redraw(); this.hide(); })
-    .catch((e) => {
-      app.alerts.show(
-        { type: 'error' },
-        e?.response?.errors?.[0]?.detail || app.translator.trans('core.lib.error.generic_with_reason_text')
-      );
-      throw e;
-    })
-    .finally(() => { this.loading = false; });
+      .finally(() => {
+        this.loading = false;
+      });
   }
 
   isCanEditChannel() {
@@ -476,8 +472,12 @@ export default class ChatEditModal extends ChatModal {
         ? [
             <br />,
             this.componentFormInput({
-              title: app.translator.trans('xelson-chat.forum.chat.edit_modal.form.delete.title'),
-              desc: app.translator.trans('xelson-chat.forum.chat.edit_modal.form.delete.desc'),
+              title: app.translator.trans(
+                'xelson-chat.forum.chat.edit_modal.form.delete.title'
+              ),
+              desc: app.translator.trans(
+                'xelson-chat.forum.chat.edit_modal.form.delete.desc'
+              ),
               placeholder: app.translator.trans(
                 'xelson-chat.forum.chat.edit_modal.form.delete.placeholder'
               ),
@@ -490,7 +490,9 @@ export default class ChatEditModal extends ChatModal {
         onclick={this.ondelete.bind(this)}
         disabled={this.deleteState == 1 && !this.isValidTitleCopy()}
       >
-        {app.translator.trans('xelson-chat.forum.chat.edit_modal.form.delete.button')}
+        {app.translator.trans(
+          'xelson-chat.forum.chat.edit_modal.form.delete.button'
+        )}
       </Button>,
     ];
   }
@@ -526,4 +528,3 @@ export default class ChatEditModal extends ChatModal {
     );
   }
 }
-
