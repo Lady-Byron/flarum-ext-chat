@@ -27,7 +27,7 @@ Object.assign(Chat.prototype, {
   removed_by: Model.attribute('removed_by'),
 
   // -------------------------------------------------------------------
-  // +++ 新增：权限辅助函数 +++
+  // +++ (已修正) 权限辅助函数 +++
   // -------------------------------------------------------------------
 
   /**
@@ -47,40 +47,52 @@ Object.assign(Chat.prototype, {
   },
 
   /**
-   * 是否为当前会话的 *活跃* 成员 (或管理员)
+   * 是否为当前会话的 *活跃* 成员
    * (这是 ChatUserSerializer 注入的 *当前用户* 的 pivot 状态)
+   *
+   * [!!! 修复 !!!]
+   * 此函数现在 *只* 报告真实的 pivot 状态。
+   * 管理员绕行逻辑已移至 canAccessContent()。
    * @returns {boolean}
    */
   isMember() {
-    // 管理员始终被视为成员
-    if (this._isAdmin()) return true;
-
-    // 必须有 joined_at 且 *没有* removed_at
-    // (注意：这里的 joined_at, removed_at 是从 ChatUserSerializer 序列化来的
-    // 它们代表 *当前 actor* 在这个会话中的 pivot 状态)
+    // (已删除: if (this._isAdmin()) return true;)
     return this.joined_at() && !this.removed_at();
   },
 
   /**
    * 是否 *可以* 访问内容（读/写）
+   * (供 ChatViewport 使用)
+   *
+   * [!!! 修复 !!!]
+   * 此函数现在包含管理员绕行逻辑。
    * @returns {boolean}
    */
   canAccessContent() {
-    // 根据我们的需求，公共频道也必须加入才能访问，因此 isMember() 是唯一标准
+    // 1. 管理员绕行 (用于读/写)
+    if (this._isAdmin()) return true;
+
+    // 2. 正常成员检查 (使用已修复的 isMember)
     return this.isMember();
   },
 
   /**
    * 是否 *可以* 加入 (或 重新加入)
+   * (供 ChatViewport 的 "加入" 按钮使用)
    * @returns {boolean}
    */
   canJoin() {
+    // [!!! 修复 !!!] 
+    // canJoin 的逻辑依赖于 isMember() (现在已修正)
     // 已经是成员，不能加入
     if (this.isMember()) return false; 
     
+    // 管理员不应该看到“加入”按钮 (因为 canAccessContent() 会通过)
+    // 但如果他们通过其他方式（如 ChatEditModal）调用，我们也允许
+    if (this._isAdmin()) return true;
+    
     // 1. 如果是公共频道，总可以加入
     // 2. 如果是私聊/群聊，只有在 (removed_at 存在) = "曾经是成员" 的情况下，才允许重新加入
-    //    (注意：'removed_at' 是您自己的 pivot 状态)
     return this.isPublic() || this.removed_at();
   },
 
