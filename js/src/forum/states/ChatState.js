@@ -785,15 +785,36 @@ export default class ChatState {
   // +++ 新增：加入聊天 (供 ChatViewport 调用) +++
   apiJoinChat(chatModel) {
     const me = app.session.user;
-    if (!me || !chatModel) return Promise.reject();
+    if (!me || !chatModel || !chatModel.id()) return Promise.reject();
 
-    // 模仿 ChatEditModal/ChatCreateModal 的"加入"和"复归"逻辑
-    // 这会发送一个 PATCH 到 EditChatHandler，
-    // 后端的 'isTryingToJoin' 逻辑 (批次二) 会捕获它。
-    return chatModel.save({
-        users: { added: [Model.getIdentifier(me)] },
-        // 附带 relationships.users 更稳健，与 ChatEditModal 行为对齐
-        relationships: { users: chatModel.users() || [] }
+    // 1. 构建 'attributes'
+    // (EditChatHandler 期望 'attributes.users.added')
+    const attributes = {
+        users: {
+            added: [{ type: 'users', id: me.id() }]
+        }
+    };
+    
+    // 2. 构建 'relationships' (Flarum/JSON:API 标准)
+    // (这是 model.save() 会自动提取的部分)
+    const relationships = {
+        users: {
+            data: (chatModel.users() || []).map(Model.getIdentifier)
+        }
+    };
+
+    // 3. 我们使用 app.request 强制发送 PATCH
+    return app.request({
+        method: 'PATCH',
+        url: `${app.forum.attribute('apiUrl')}/chats/${chatModel.id()}`,
+        body: {
+            data: {
+                type: 'chats',
+                id: chatModel.id(),
+                attributes: attributes,      // ✅ 'attributes.users.added'
+                relationships: relationships // ✅ 'relationships.users.data'
+            }
+        }
     });
   }
 
