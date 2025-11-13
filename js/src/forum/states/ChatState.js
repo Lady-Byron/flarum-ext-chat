@@ -784,29 +784,34 @@ export default class ChatState {
 
   apiJoinChat(chatModel) {
     const me = app.session.user;
-    if (!me || !chatModel || !chatModel.id?.()) return Promise.reject();
+    if (!me || !chatModel || !chatModel.id()) {
+      return Promise.reject(new Error('invalid state'));
+    }
+
+    const chatId = String(chatModel.id());
+    const added = [{ type: 'users', id: String(me.id()) }];
+    const relUsers = (chatModel.users() || []).map(Model.getIdentifier);
 
     return app.request({
-      method: 'PATCH', // 可能被降格为 POST，但有 Override 也没问题
-      url: `${app.forum.attribute('apiUrl')}/chats/${chatModel.id()}`,
+      method: 'POST',                                 // ← 用 POST
+      url: `${app.forum.attribute('apiUrl')}/chats/${chatId}`,
       headers: {
-        'Content-Type': 'application/vnd.api+json',
-        'Accept': 'application/vnd.api+json',
+        'Content-Type': 'application/json; charset=UTF-8',
+        'Accept': '*/*',
         'X-CSRF-Token': app.session.csrfToken,
-        'X-HTTP-Method-Override': 'PATCH',   // 显式加，确保路由命中
+        'X-HTTP-Method-Override': 'PATCH',            // ← 覆写为 PATCH
       },
       body: {
         data: {
           type: 'chats',
-          id: chatModel.id(),
-          attributes: { users: { added: [Model.getIdentifier(app.session.user)] } },
-          relationships: {
-            users: { data: (chatModel.users() || []).map(Model.getIdentifier) },
-          },
-        },
-      },
+          id: chatId,
+          attributes: { users: { added } },           // ← attributes.users.added 只加“我自己”
+          relationships: { users: { data: relUsers } }
+        }
+      }
     }).then((json) => app.store.pushPayload(json));
   }
+
 
     
 
