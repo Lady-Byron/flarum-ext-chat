@@ -24,7 +24,7 @@ class CreateChatController extends AbstractCreateController
      *
      * @var ChatSerializer
      */
-	public $serializer = ChatSerializer::class;
+	public $serializer = ChatUserSerializer::class; // +++ 修改 +++
 
     /**
      * {@inheritdoc}
