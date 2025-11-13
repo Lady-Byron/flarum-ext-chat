@@ -786,29 +786,6 @@ export default class ChatState {
     const me = app.session.user;
     if (!me || !chatModel || !chatModel.id()) return Promise.reject();
 
-    // 错误根源: model.save() 错误地发送了 POST。
-    // 解决方案: 我们使用 app.request() 来强制发送 PATCH，
-    //         并手动构建一个 *完全* 模仿 Flarum model.save() 行为的 payload。
-    //         这个 payload 结构与您在 ChatCreateModal.js 中用于“复归”的
-    //         工作代码 100% 匹配。
-
-    // 1. 构建 'attributes'
-    // (EditChatHandler 期望 'attributes.users.added')
-    const attributes = {
-        users: {
-            added: [{ type: 'users', id: me.id() }]
-        }
-    };
-    
-    // 2. 构建 'relationships' (Flarum/JSON:API 标准)
-    // (这是 model.save() 会自动提取的部分)
-    const relationships = {
-        users: {
-            data: (chatModel.users() || []).map(Model.getIdentifier)
-        }
-    };
-
-    // 3. 我们使用 app.request 强制发送 PATCH
     return app.request({
       method: 'PATCH', // 可能被降格为 POST，但有 Override 也没问题
       url: `${app.forum.attribute('apiUrl')}/chats/${chatModel.id()}`,
