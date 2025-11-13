@@ -5,6 +5,9 @@
 //      只切换“最近的 .Dropdown”，并关闭同一 Modal 里的其它已打开下拉；
 //   2) 在 Dropdown 根上阻止冒泡，避免外层误触发。
 // - 其它你已有的 1.8 兼容与空值守护保持不变。
+// - [NEW] 加入/退出：不再依赖 oninit 计算的 this.isLocalLeaved（可能过期），
+//        改为运行时基于 this.model.canAccessContent()/this.model.canJoin() 判定；
+//        强制使用 PATCH + JSON:API payload，并在成功后 pushPayload 同步本地 store。
 
 import app from 'flarum/forum/app';
 import Button from 'flarum/common/components/Button';
@@ -39,12 +42,15 @@ export default class ChatEditModal extends ChatModal {
     this.setSelectedUsers((this.model.users() || []).filter(alive));
     this.edited = {};
 
-    // 我是否已加入：pivot 存在 且 未 removed
+    // 我是否已加入：pivot 存在 且 未 removed（仅初始化时的提示；后续逻辑不再依赖此变量）
     const me = app.session.user;
     const mePivot = me && me.chat_pivot ? me.chat_pivot(chatId) : null;
     this.isLocalLeaved = !(mePivot && !mePivot.removed_at?.());
 
     this.isLocalModerator = this.isModer(me);
+
+    // (锁) 防止加入/退出重复点击
+    this.loading = false;
   }
 
   oncreate(vnode) {
@@ -328,14 +334,15 @@ export default class ChatEditModal extends ChatModal {
       );
     }
 
-    // ✅ 根据 isLocalLeaved 决定是“加入”还是“退出”
+    // ✅ 文案依据“实时状态”：this.model.canAccessContent() 为 true -> 显示“退出”；否则“加入”
     buttons.push(
       <Button
         className="Button Button--primary Button--block ButtonLeave"
         onclick={this.onleave.bind(this)}
+        loading={this.loading}
       >
         {app.translator.trans(
-          `xelson-chat.forum.chat.edit_modal.form.${this.isLocalLeaved ? 'return' : 'leave'}`
+          `xelson-chat.forum.chat.edit_modal.form.${this.model.canAccessContent() ? 'leave' : 'return'}`
         )}
       </Button>
     );
@@ -347,29 +354,113 @@ export default class ChatEditModal extends ChatModal {
     return buttons;
   }
 
+  // ... (在 componentFormButtons() 之后) ...
+
   onleave() {
     const me = app.session.user;
     if (!me) return;
 
-    if (!this.isLocalLeaved) {
-      // 已加入 -> 退出
-      this.model
-        .save({
-          users: { removed: [Model.getIdentifier(me)] },
-          relationships: { users: this.getSelectedUsers() },
-        })
-        .then(() => m.redraw());
-    } else {
-      // 未加入 -> 加入
-      this.getSelectedUsers().push(me);
-      this.model
-        .save({
-          users: { added: [Model.getIdentifier(me)] },
-          relationships: { users: this.getSelectedUsers() },
-        })
-        .then(() => m.redraw());
+    // (锁) 防止重复点击
+    if (this.loading) return;
+    this.loading = true;
+
+    // ❗️不要再用 this.isLocalLeaved（可能是旧值、与后端不同步）
+    const isMember = this.model.canAccessContent(); // 已加入？
+    const canJoin  = this.model.canJoin();          // 可以加入？
+
+    // --- 场景 1：已加入 -> 退出 ---
+    if (isMember) {
+      // 1) 构建 'attributes'
+      const attributes = {
+        users: {
+          removed: [{ type: 'users', id: me.id() }]
+        }
+      };
+
+      // 2) 构建 'relationships'：把自己从“当前选中成员列表”里移除
+      const relationships = {
+        users: {
+          data: (this.getSelectedUsers() || [])
+            .filter(u => u && u.id() !== me.id())
+            .map(Model.getIdentifier)
+        }
+      };
+
+      app.request({
+        method: 'PATCH', // 强制 PATCH
+        url: `${app.forum.attribute('apiUrl')}/chats/${this.model.id()}`,
+        body: {
+          data: {
+            type: 'chats',
+            id: this.model.id(),
+            attributes,
+            relationships
+          }
+        }
+      })
+      .then(payload => { if (payload) app.store.pushPayload(payload); }) // 同步 store（pivot/relationships）
+      .then(() => { m.redraw(); this.hide(); })
+      .catch((e) => {
+        // 显示后端 403/500
+        app.alerts.show(
+          { type: 'error' },
+          e?.response?.errors?.[0]?.detail || app.translator.trans('core.lib.error.generic_with_reason_text')
+        );
+        throw e; // 便于控制台查看
+      })
+      .finally(() => { this.loading = false; });
+
+      return;
     }
-    this.hide();
+
+    // --- 场景 2：未加入 -> 加入 ---
+    if (!canJoin) {
+      // 被踢/私聊不允许自助加入，直接提示
+      this.loading = false;
+      app.alerts.show(
+        { type: 'error' },
+        app.translator.trans('xelson-chat.forum.chat.viewport.no_permission_description')
+      );
+      return;
+    }
+
+    // 1) 构建 'attributes'
+    const attributes = {
+      users: {
+        added: [{ type: 'users', id: me.id() }]
+      }
+    };
+
+    // 2) 构建 'relationships'：确保把自己加入到本地列表
+    const currentUsers = (this.getSelectedUsers() || []).slice();
+    if (!currentUsers.some(u => u && u.id() === me.id())) currentUsers.push(me);
+
+    const relationships = {
+      users: { data: currentUsers.map(Model.getIdentifier) }
+    };
+
+    app.request({
+      method: 'PATCH', // 强制 PATCH
+      url: `${app.forum.attribute('apiUrl')}/chats/${this.model.id()}`,
+      body: {
+        data: {
+          type: 'chats',
+          id: this.model.id(),
+          attributes,
+          relationships
+        }
+      }
+    })
+    .then(payload => { if (payload) app.store.pushPayload(payload); }) // 同步 store（pivot/relationships）
+    .then(() => { m.redraw(); this.hide(); })
+    .catch((e) => {
+      app.alerts.show(
+        { type: 'error' },
+        e?.response?.errors?.[0]?.detail || app.translator.trans('core.lib.error.generic_with_reason_text')
+      );
+      throw e;
+    })
+    .finally(() => { this.loading = false; });
   }
 
   isCanEditChannel() {
@@ -435,3 +526,4 @@ export default class ChatEditModal extends ChatModal {
     );
   }
 }
+
