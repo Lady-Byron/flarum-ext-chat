@@ -86,7 +86,21 @@ class MessageRepository
      */
     public function fetch($time, User $actor, Chat $chat)
     {
-        $chatUser = $chat->getChatUser($actor);
+        // +++ 权限修复 (瑕疵 3) +++
+        // 原始代码:
+        // $chatUser = $chat->getChatUser($actor); // <--- 这是“自动加入”漏洞
+        //
+        // 修复：
+        // 我们必须使用在 Chat.php (批次一) 中创建的“安全”的 getMembership 方法，
+        // 它不会自动将用户加入。
+        $chatUser = $chat->getMembership($actor);
+        // +++ 修复结束 +++
+
+
+        // 注意： $top 和 $bottom 的 $this->queryVisible() 已经
+        // 包含了 canAccessContent() 检查（来自批次一）。
+        // 如果用户无权，top 和 bottom 都会是空查询，
+        // 因此我们无需在此处添加额外的 canAccessContent 检查
 
         $top = $this->queryVisible($chat, $actor)->where('chat_id', $chat->id);
         if($chatUser && $chatUser->removed_at)
