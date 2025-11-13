@@ -829,6 +829,7 @@ export default class ChatState {
         },
       },
     }).then((json) => app.store.pushPayload(json));
+  }
 
     
 
