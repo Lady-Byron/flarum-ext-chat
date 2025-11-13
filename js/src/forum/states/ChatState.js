@@ -787,36 +787,17 @@ export default class ChatState {
     const me = app.session.user;
     if (!me || !chatModel || !chatModel.id()) return Promise.reject();
 
-    // 1. 构建 'attributes'
-    // (EditChatHandler 期望 'attributes.users.added')
-    const attributes = {
-        users: {
-            added: [{ type: 'users', id: me.id() }]
-        }
-    };
-    
-    // 2. 构建 'relationships' (Flarum/JSON:API 标准)
-    // (这是 model.save() 会自动提取的部分)
-    const relationships = {
-        users: {
-            data: (chatModel.users() || []).map(Model.getIdentifier)
-        }
-    };
+    // 告诉 Store：这是更新已有资源
+    chatModel.exists = true;
+    chatModel.data = chatModel.data || { type: 'chats', id: chatModel.id() };
 
-    // 3. 我们使用 app.request 强制发送 PATCH
-    return app.request({
-        method: 'PATCH',
-        url: `${app.forum.attribute('apiUrl')}/chats/${chatModel.id()}`,
-        body: {
-            data: {
-                type: 'chats',
-                id: chatModel.id(),
-                attributes: attributes,      // ✅ 'attributes.users.added'
-                relationships: relationships // ✅ 'relationships.users.data'
-            }
-        }
+    return chatModel.save({
+      users: { added: [Model.getIdentifier(me)] },           // → data.attributes.users.added
+      relationships: { users: chatModel.users() || [] },     // → data.relationships.users.data
     });
   }
+
+    
 
   /* --------------------------------
    *  发送 / 编辑 / 隐藏 / 删除
