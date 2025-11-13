@@ -784,7 +784,7 @@ export default class ChatState {
 
   apiJoinChat(chatModel) {
     const me = app.session.user;
-    if (!me || !chatModel || !chatModel.id()) return Promise.reject();
+    if (!me || !chatModel || !chatModel.id?.()) return Promise.reject();
 
     return app.request({
       method: 'PATCH', // 可能被降格为 POST，但有 Override 也没问题
