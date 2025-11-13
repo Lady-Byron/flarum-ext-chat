@@ -24,7 +24,7 @@ Object.assign(Chat.prototype, {
   readed_at: Model.attribute('readed_at', Model.transformDate),
   removed_at: Model.attribute('removed_at', Model.transformDate),
   joined_at: Model.attribute('joined_at', Model.transformDate),
-  removed_by: Model.attribute('removed_by'),
+  removed_by: Model.attribute('removed_by'), // <-- 我们需要这个属性
 
   // -------------------------------------------------------------------
   // +++ (已修正) 权限辅助函数 +++
@@ -48,52 +48,59 @@ Object.assign(Chat.prototype, {
 
   /**
    * 是否为当前会话的 *活跃* 成员
-   * (这是 ChatUserSerializer 注入的 *当前用户* 的 pivot 状态)
-   *
-   * [!!! 修复 !!!]
-   * 此函数现在 *只* 报告真实的 pivot 状态。
-   * 管理员绕行逻辑已移至 canAccessContent()。
+   * (供 ChatList.js 使用)
    * @returns {boolean}
    */
   isMember() {
-    // (已删除: if (this._isAdmin()) return true;)
     return this.joined_at() && !this.removed_at();
   },
 
   /**
    * 是否 *可以* 访问内容（读/写）
-   * (供 ChatViewport 使用)
-   *
-   * [!!! 修复 !!!]
-   * 此函数现在包含管理员绕行逻辑。
+   * (供 ChatViewport.js 使用)
    * @returns {boolean}
    */
   canAccessContent() {
-    // 1. 管理员绕行 (用于读/写)
     if (this._isAdmin()) return true;
-
-    // 2. 正常成员检查 (使用已修复的 isMember)
     return this.isMember();
   },
 
   /**
    * 是否 *可以* 加入 (或 重新加入)
-   * (供 ChatViewport 的 "加入" 按钮使用)
+   *
+   * [!!! 最终修复 !!!]
+   * 新增了“被踢”检查。
    * @returns {boolean}
    */
   canJoin() {
-    // [!!! 修复 !!!] 
-    // canJoin 的逻辑依赖于 isMember() (现在已修正)
-    // 已经是成员，不能加入
-    if (this.isMember()) return false; 
+    // 1. 已经是成员了，不能加入
+    if (this.isMember()) return false;
     
-    // 管理员不应该看到“加入”按钮 (因为 canAccessContent() 会通过)
-    // 但如果他们通过其他方式（如 ChatEditModal）调用，我们也允许
+    // 2. 管理员总是可以（虽然他们不需要，因为 canAccessContent 总是 true）
     if (this._isAdmin()) return true;
+
+    // 3. 检查是否“被踢”
+    const me = app.session.user;
+    const wasKicked = this.removed_at() && this.removed_by() && me && this.removed_by() != me.id();
+
+    if (wasKicked) {
+        // 如果你被踢了，你永远不能通过这个按钮重新加入
+        return false;
+    }
+
+    // 4. 如果没被踢：
     
-    // 1. 如果是公共频道，总可以加入
-    // 2. 如果是私聊/群聊，只有在 (removed_at 存在) = "曾经是成员" 的情况下，才允许重新加入
-    return this.isPublic() || this.removed_at();
+    // 4a. 如果是公共频道，任何人都可以加入（包括首次加入或自愿离开后回归）
+    if (this.isPublic()) {
+        return true;
+    }
+
+    // 4b. 如果是私聊/群聊：
+    const didLeave = this.removed_at() && this.removed_by() && me && this.removed_by() == me.id();
+    
+    // 只有“自愿离开”的人才能“复归”
+    // (新用户必须被邀请，不能主动加入私聊)
+    return didLeave;
   },
 
   // -------------------------------------------------------------------
