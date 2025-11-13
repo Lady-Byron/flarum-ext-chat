@@ -24,7 +24,14 @@ class ChatUserSerializer extends ChatSerializer
         $attributes = $chat->getAttributes();
 		if($chat->created_at) $attributes['created_at'] = $this->formatDate($chat->created_at);
 		
-		$chatUser = $chat->getChatUser($this->actor);
+		// +++ 权限修复 (瑕疵 3) +++
+        // 原始代码:
+		// $chatUser = $chat->getChatUser($this->actor); // <--- 这是“自动加入”漏洞
+        //
+        // 修复：
+        // 必须使用“安全”的 getMembership 方法
+        $chatUser = $chat->getMembership($this->actor);
+        // +++ 修复结束 +++
 		if($chatUser)
 		{
             $attributes['role'] = $chatUser->role;
