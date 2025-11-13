@@ -782,18 +782,44 @@ export default class ChatState {
       });
   }
 
-  // +++ 新增：加入聊天 (供 ChatViewport 调用) +++
   apiJoinChat(chatModel) {
     const me = app.session.user;
     if (!me || !chatModel || !chatModel.id()) return Promise.reject();
 
-    // 告诉 Store：这是更新已有资源
-    chatModel.exists = true;
-    chatModel.data = chatModel.data || { type: 'chats', id: chatModel.id() };
+    // 错误根源: model.save() 错误地发送了 POST。
+    // 解决方案: 我们使用 app.request() 来强制发送 PATCH，
+    //         并手动构建一个 *完全* 模仿 Flarum model.save() 行为的 payload。
+    //         这个 payload 结构与您在 ChatCreateModal.js 中用于“复归”的
+    //         工作代码 100% 匹配。
 
-    return chatModel.save({
-      users: { added: [Model.getIdentifier(me)] },           // → data.attributes.users.added
-      relationships: { users: chatModel.users() || [] },     // → data.relationships.users.data
+    // 1. 构建 'attributes'
+    // (EditChatHandler 期望 'attributes.users.added')
+    const attributes = {
+        users: {
+            added: [{ type: 'users', id: me.id() }]
+        }
+    };
+    
+    // 2. 构建 'relationships' (Flarum/JSON:API 标准)
+    // (这是 model.save() 会自动提取的部分)
+    const relationships = {
+        users: {
+            data: (chatModel.users() || []).map(Model.getIdentifier)
+        }
+    };
+
+    // 3. 我们使用 app.request 强制发送 PATCH
+    return app.request({
+        method: 'PATCH',
+        url: `${app.forum.attribute('apiUrl')}/chats/${chatModel.id()}`,
+        body: {
+            data: {
+                type: 'chats',
+                id: chatModel.id(),
+                attributes: attributes,      // ✅ 'attributes.users.added'
+                relationships: relationships // ✅ 'relationships.users.data'
+            }
+        }
     });
   }
 
