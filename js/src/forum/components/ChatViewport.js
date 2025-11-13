@@ -68,7 +68,7 @@ export default class ChatViewport extends Component {
     // 就不要加载消息。
     if (this.model && !this.model.canAccessContent()) {
       // 标记为已加载，防止后续触发
-      // this.state.messagesFetched = true; 
+      this.state.messagesFetched = true; 
       return;
     }
     // +++ 检查结束 +++
