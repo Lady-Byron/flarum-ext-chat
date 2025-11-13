@@ -810,18 +810,25 @@ export default class ChatState {
 
     // 3. 我们使用 app.request 强制发送 PATCH
     return app.request({
-        method: 'PATCH',
-        url: `${app.forum.attribute('apiUrl')}/chats/${chatModel.id()}`,
-        body: {
-            data: {
-                type: 'chats',
-                id: chatModel.id(),
-                attributes: attributes,      // ✅ 'attributes.users.added'
-                relationships: relationships // ✅ 'relationships.users.data'
-            }
-        }
-    });
-  }
+      method: 'PATCH', // 可能被降格为 POST，但有 Override 也没问题
+      url: `${app.forum.attribute('apiUrl')}/chats/${chatModel.id()}`,
+      headers: {
+        'Content-Type': 'application/vnd.api+json',
+        'Accept': 'application/vnd.api+json',
+        'X-CSRF-Token': app.session.csrfToken,
+        'X-HTTP-Method-Override': 'PATCH',   // 显式加，确保路由命中
+      },
+      body: {
+        data: {
+          type: 'chats',
+          id: chatModel.id(),
+          attributes: { users: { added: [Model.getIdentifier(app.session.user)] } },
+          relationships: {
+            users: { data: (chatModel.users() || []).map(Model.getIdentifier) },
+          },
+        },
+      },
+    }).then((json) => app.store.pushPayload(json));
 
     
 
