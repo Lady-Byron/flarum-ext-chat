@@ -63,7 +63,14 @@ class MessageRepository
         $settings = resolve(SettingsRepositoryInterface::class);
 
         $query = $this->query();
-        $chatUser = $chat->getChatUser($actor);
+        // +++ 权限修复 (瑕疵 3) +++
+        // 原始代码:
+        // $chatUser = $chat->getChatUser($actor); // <--- 这是“自动加入”漏洞
+        //
+        // 修复：
+        // 我们必须使用“安全”的 getMembership 方法
+        $chatUser = $chat->getMembership($actor);
+        // +++ 修复结束 +++
 
         if(!$chatUser || !$chatUser->role)
             $query->where(function ($query) use ($actor) {
