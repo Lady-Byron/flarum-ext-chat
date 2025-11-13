@@ -14,7 +14,7 @@ use Psr\Http\Message\ServerRequestInterface;
 use Tobscure\JsonApi\Document;
 use Illuminate\Support\Arr;
 
-use Xelson\Chat\Api\Serializers\ChatSerializer;
+use Xelson\Chat\Api\Serializers\ChatUserSerializer; // +++ 修改 +++
 use Xelson\Chat\Commands\CreateChat;
 
 class CreateChatController extends AbstractCreateController 
