@@ -44,7 +44,25 @@ class ReadChatHandler
             throw new PermissionDeniedException();
         }
 
-        $chatUser = $chat->getChatUser($actor);
+        // +++ 修复 (瑕疵 5 - 管理员 500 错误) +++
+        // 原始代码:
+        // $chatUser = $chat->getChatUser($actor); // <--- 这是 Bug！
+        //
+        // 修复：
+        // 必须使用“安全”的 getMembership 方法
+        $chatUser = $chat->getMembership($actor);
+        // +++ 修复结束 +++
+        
+        // (已删除) 旧的检查
+        // $actor->assertPermission($chatUser);
+
+        // +++ 修复 (瑕疵 5 - 管理员 500 错误) +++
+        // 如果 $chatUser 为 null (例如，管理员在围观, 没有 pivot 记录),
+        // 我们不应该尝试更新 pivot。安静地返回。
+        if (!$chatUser) {
+            return $chat;
+        }
+        // +++ 修复结束 +++
 
         $time = new Carbon($readed_at);
         if ($chatUser->removed_at && $time > $chatUser->removed_at) $time = $chatUser->removed_at;
