@@ -784,32 +784,13 @@ export default class ChatState {
 
   apiJoinChat(chatModel) {
     const me = app.session.user;
-    if (!me || !chatModel || !chatModel.id()) {
-      return Promise.reject(new Error('invalid state'));
-    }
+    if (!me || !chatModel || !chatModel.id()) return Promise.reject(new Error('invalid state'));
 
-    const chatId = String(chatModel.id());
-    const added = [{ type: 'users', id: String(me.id()) }];
-    const relUsers = (chatModel.users() || []).map(Model.getIdentifier);
-
-    return app.request({
-      method: 'POST',                                 // ← 用 POST
-      url: `${app.forum.attribute('apiUrl')}/chats/${chatId}`,
-      headers: {
-        'Content-Type': 'application/json; charset=UTF-8',
-        'Accept': '*/*',
-        'X-CSRF-Token': app.session.csrfToken,
-        'X-HTTP-Method-Override': 'PATCH',            // ← 覆写为 PATCH
-      },
-      body: {
-        data: {
-          type: 'chats',
-          id: chatId,
-          attributes: { users: { added } },           // ← attributes.users.added 只加“我自己”
-          relationships: { users: { data: relUsers } }
-        }
-      }
-    }).then((json) => app.store.pushPayload(json));
+    // 100% 复刻 ChatCreateModal 的写法
+    return chatModel.save({
+      users: { added: [Model.getIdentifier(me)] },         // → attributes.users.added
+      relationships: { users: chatModel.users() || [] }    // → relationships.users.data
+    });
   }
 
 
