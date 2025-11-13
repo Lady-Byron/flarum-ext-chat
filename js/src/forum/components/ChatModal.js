@@ -122,7 +122,15 @@ export default class ChatModal extends Modal {
           <div
             key={u.id ? u.id() : Math.random()}
             className={classList(['UserMention', this.userMentionClassname(u)])}
-            onclick={this.userMentionOnClick.bind(this, null, u)}
+            // +++ 修复 (瑕疵 4) +++
+            // 原始代码:
+            // onclick={this.userMentionOnClick.bind(this, null, u)}
+            //
+            // 修复：
+            // 我们使用标准的 Mithril 箭头函数来传递 (model, event)
+            // 这将匹配 ChatEditModal.js (子类) 所期望的 (user, e) 签名
+            onclick={(e) => this.userMentionOnClick(u, e)}
+            // +++ 修复结束 +++
           >
             {this.userMentionContent(u)}
           </div>
