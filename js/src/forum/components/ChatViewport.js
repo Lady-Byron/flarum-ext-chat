@@ -14,6 +14,9 @@
 // [FIX] 必改：scrollToBottom 提前 return 时复位 this.scrolling，避免卡死
 // [FIX] Mithril keys：为 Loader 添加稳定 key，并以数组形式组装 children，避免“键混用”错误
 // [FIX] 临时 key：对消息条目统一计算 key（优先 id()，否则 tempKey，再退回 map index），避免“无 key”乐观消息与“有 key”历史消息混用
+// [NEW ✅] 首帧权限闪现修复 1：在 onbeforeupdate 中抢先同步 this.model/this.state，确保 view() 首帧用新会话
+// [NEW ✅] 首帧权限闪现修复 2：view() 顶部改用 const model = this.attrs.chatModel || this.model
+// [NEW ✅] 未获权限时 loadChat() 立即 m.redraw()，避免短暂渲染输入框
 
 import app from 'flarum/forum/app';
 import Component from 'flarum/common/Component';
@@ -39,6 +42,21 @@ export default class ChatViewport extends Component {
     this.loadingJoin = false;
   }
 
+  // [NEW ✅] 抢先于 view() 同步 this.model/this.state，避免首帧用旧会话造成权限闪现
+  onbeforeupdate(vnode, vnodeNew) {
+    try {
+      const next = vnodeNew.attrs && vnodeNew.attrs.chatModel;
+      if (next !== this.model) {
+        this.model = next || null;
+        this.state = this.model ? app.chat.getViewportState(this.model) : null;
+      }
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.warn('ChatViewport onbeforeupdate sync error:', e);
+    }
+    return true;
+  }
+
   oncreate(vnode) {
     super.oncreate(vnode);
     this.loadChat();
@@ -49,11 +67,9 @@ export default class ChatViewport extends Component {
     const model = vnode.attrs.chatModel;
 
     if (model !== this.model) {
-      this.model = model;
-      if (this.model) {
-        this.state = app.chat.getViewportState(this.model);
-        this.loadChat();
-      }
+      this.model = model || null;
+      this.state = this.model ? app.chat.getViewportState(this.model) : null;
+      if (this.model) this.loadChat();
       const jq = this.$ ? this.$('.wrapper') : (window.$ && window.$('.wrapper'));
       if (jq) app.chat.flashItem(jq);
     }
@@ -63,12 +79,12 @@ export default class ChatViewport extends Component {
     if (!this.state) return;
 
     // +++ 新增：权限检查 +++
-    // 如果用户不能访问内容
-    // (canAccessContent 内部已包含管理员检查)
-    // 就不要加载消息。
+    // 如果用户不能访问内容（model.canAccessContent 内已含管理员绕行），不要加载消息
     if (this.model && !this.model.canAccessContent()) {
       // 标记为已加载，防止后续触发
-      this.state.messagesFetched = true; 
+      this.state.messagesFetched = true;
+      // [NEW ✅] 立即重绘，避免短暂显示输入框/空消息容器
+      try { m.redraw(); } catch {}
       return;
     }
     // +++ 检查结束 +++
@@ -93,16 +109,17 @@ export default class ChatViewport extends Component {
   }
 
   view() {
-    if (this.model) {
-      
+    // [NEW ✅] 首帧直接使用“最新 attrs”里的 chatModel，回退 this.model（双保险）
+    const model = this.attrs.chatModel || this.model;
+
+    if (model) {
       // +++ 新增：核心权限 UI 切换 +++
-      if (this.model.canAccessContent()) {
+      if (model.canAccessContent()) {
         // --- 场景1：有权访问 (旧逻辑) ---
-        // (管理员或活跃成员)
         // [FIX] children 显式组装为数组（loader + 消息），确保同层级 keyed children 一致
         const children = [
           this.componentLoader(this.state?.loading),
-          ...this.componentsChatMessages(this.model),
+          ...this.componentsChatMessages(model),
         ];
 
         return (
@@ -118,7 +135,7 @@ export default class ChatViewport extends Component {
             </div>
             <ChatInput
               state={this.state}
-              model={this.model}
+              model={model}
               oninput={() => {
                 if (this.nearBottom() && !this.state.messageEditing) {
                   this.scrollToBottom();
@@ -133,10 +150,10 @@ export default class ChatViewport extends Component {
         // (非成员)
         return (
           <div className="ChatViewport ChatViewport--blocked">
-            {this.model.canJoin() ? (
+            {model.canJoin() ? (
               // 2a: 可以加入 (公共频道 / 已退出的私聊)
               <div className="ChatViewport-join">
-                <p>{app.translator.trans('xelson-chat.forum.chat.viewport.must_join_description', { title: this.model.title() })}</p>
+                <p>{app.translator.trans('xelson-chat.forum.chat.viewport.must_join_description', { title: model.title() })}</p>
                 <Button
                   className="Button Button--primary"
                   icon="fas fa-plus"
@@ -171,21 +188,16 @@ export default class ChatViewport extends Component {
     if (this.loadingJoin) return;
     this.loadingJoin = true;
 
-    // 我们需要一个在 ChatState.js 上的 'apiJoinChat' 帮助
-    // (我们将在下一批次中添加它)
     app.chat.apiJoinChat(this.model)
       .then(() => {
-        // 成功加入后，模型的状态会通过 pusher 更新
-        // 此时 isMember() / canAccessContent() 会变为 true，
-        // Mithril 会自动重绘，显示场景1 (聊天内容)
         this.loadingJoin = false;
-        this.loadChat(); // 重新加载消息
+        this.loadChat(); // 成功后立即尝试加载消息
         m.redraw();
       })
       .catch((e) => {
         this.loadingJoin = false;
         m.redraw();
-        // (处理错误, e.g., 弹窗)
+        // eslint-disable-next-line no-console
         console.error('[neon-chat] Join chat failed:', e);
         app.alerts.show({ type: 'error' }, e?.response?.errors?.[0]?.detail || app.translator.trans('core.lib.error.generic_with_reason_text'));
       });
@@ -287,7 +299,6 @@ export default class ChatViewport extends Component {
       timedRedraw(300);
 
       this.model.pushAttributes({ unreaded: 0 });
-      // [CHANGED] 用 id 比较
       const message = app.chat
         .getChatMessages((mdl) => String(mdl.chat()?.id?.() ?? '') === String(this.model?.id?.() ?? ''))
         .slice(-1)[0];
@@ -391,14 +402,12 @@ export default class ChatViewport extends Component {
 
     if (!state.messageEditing && el.scrollTop >= 0) {
       if (el.scrollTop <= 500) {
-        // [CHANGED] 用 id 比较
         const topMessage = app.chat
           .getChatMessages((model) => String(model.chat()?.id?.() ?? '') === String(this.model?.id?.() ?? ''))[0];
         if (topMessage && topMessage != this.model.first_message()) {
           app.chat.apiFetchChatMessages(this.model, topMessage.created_at().toISOString());
         }
       } else if (el.scrollTop + el.clientHeight >= currentHeight - 500) { // [FIX] clientHeight
-        // [CHANGED] 用 id 比较
         const bottomMessage = app.chat
           .getChatMessages((model) => String(model.chat()?.id?.() ?? '') === String(this.model?.id?.() ?? ''))
           .slice(-1)[0];
@@ -412,7 +421,6 @@ export default class ChatViewport extends Component {
   checkUnreaded() {
     const wrapper = this.getChatWrapper();
     if (wrapper && this.model && this.model.unreaded() && app.chat.chatIsShown()) {
-      // [CHANGED] 用 id 比较 + 仅取未读区间
       const list = app.chat.getChatMessages(
         (mdl) =>
           String(mdl.chat()?.id?.() ?? '') === String(this.model?.id?.() ?? '') &&
@@ -483,7 +491,7 @@ export default class ChatViewport extends Component {
         const wrapper = this.wrapperEl || document.querySelector('.ChatViewport .wrapper');
         fewMessages = wrapper && wrapper.scrollHeight + 200 < document.documentElement.clientHeight;
       }
-      // [FIX] 必改：提前返回时复位 this.scrolling，避免卡死
+      // [FIX] 容器缺失或提前返回也要复位，避免卡死
       if (notAtBottom || fewMessages) { this.scrolling = false; return; }
 
       const time = this.pixelsFromBottom() < 80 ? 0 : 250;
@@ -516,11 +524,9 @@ export default class ChatViewport extends Component {
     }
 
     app.chat.apiFetchChatMessages(this.model, query).then(() => {
-      // [FIX] 确保 state 仍然存在
       if (!this.state) return;
 
       if (this.model.unreaded()) {
-        // [CHANGED] 用 id 比较
         const anchor = app.chat.getChatMessages(
           (mdl) =>
             String(mdl.chat()?.id?.() ?? '') === String(this.model?.id?.() ?? '') &&
