@@ -67,7 +67,18 @@ class PushChatEvents
     {
         $chat = $event->chat;
 
-        $response = $this->buildResponse($chat, $event->actor, ($event->created ? ChatSerializer::class : ChatUserSerializer::class), ['creator', 'users', 'last_message']);
+        // +++ 权限修复 (瑕疵 3) +++
+        // 原始代码在 $event->created 为 true 时，错误地使用了 ChatSerializer，
+        // 导致广播的模型缺少 pivot 数据 (joined_at 等)。
+        //
+        // 原始代码:
+        // $response = $this->buildResponse($chat, $event->actor, ($event->created ? ChatSerializer::class : ChatUserSerializer::class), ['creator', 'users', 'last_message']);
+        //
+        // 修复：
+        // 无论是否为“创建”，我们总是使用 ChatUserSerializer，
+        // 以确保广播的模型始终包含 actor 的 pivot 状态。
+        $response = $this->buildResponse($chat, $event->actor, ChatUserSerializer::class, ['creator', 'users', 'last_message']);
+        // +++ 修复结束 +++
 
         $sendData = [
             'chat' => $response
